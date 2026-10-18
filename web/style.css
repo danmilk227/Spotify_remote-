@@ -14,71 +14,221 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 40px;
+    width: 100%;
+    max-width: 800px;
 }
 
-/* iPod Nano CSS Art */
-.ipod-frame {
-    width: 180px;
-    height: 380px;
-    background: #d4d4d4;
-    border-radius: 20px;
-    box-shadow: 0 10px 20px rgba(0,0,0,0.2), inset 0 2px 5px rgba(255,255,255,0.8);
+/* Simulation Section */
+.simulation-section {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 15px 0;
-    position: relative;
+    gap: 20px;
+    width: 100%;
 }
 
-.screen {
+.action-btn {
+    padding: 10px 20px;
+    background: #0071e3;
+    color: white;
+    border: none;
+    border-radius: 20px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.action-btn:hover {
+    background: #0077ed;
+}
+
+/* 3D Scene / Container */
+.device-scene {
+    position: relative;
+    width: 200px;
+    height: 400px;
+    margin: 40px 0;
+    transition: all 0.5s ease;
+}
+
+/* All layers start at the exact same position (overlapping) */
+.layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 200px;
+    height: 400px;
+    transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    transform-origin: center center;
+}
+
+/* --- ESP32 Layer --- */
+.esp32-layer {
+    background: #2a2a2a;
+    border-radius: 10px;
+    width: 180px;
+    height: 380px;
+    top: 10px;
+    left: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    border: 2px solid #555;
+    z-index: 1;
+}
+
+.esp32-layer .chip {
+    width: 60px;
+    height: 60px;
+    background: #111;
+    margin-top: 200px;
+    color: #666;
+    font-size: 10px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: 1px solid #333;
+}
+
+.esp32-layer .antenna {
+    width: 50px;
+    height: 20px;
+    background: #b8860b;
+    margin-top: 10px;
+    background-image: repeating-linear-gradient(90deg, transparent, transparent 2px, #8b6508 2px, #8b6508 4px);
+}
+
+/* --- Case Layer --- */
+.case-layer {
+    background: #d4d4d4;
+    border-radius: 20px;
+    box-shadow: 0 10px 20px rgba(0,0,0,0.2), inset 0 2px 5px rgba(255,255,255,0.8);
+    z-index: 4;
+    /* Simulate holes for screen and wheel */
+    clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%, 0% 0%,
+        10% 8%, 10% 48%, 90% 48%, 90% 8%, 10% 8%,
+        15% 55%, 15% 95%, 85% 95%, 85% 55%, 15% 55%);
+}
+
+/* Fallback for case visual if clip-path is weird */
+.case-layer {
+    background: radial-gradient(circle at 100px 300px, transparent 65px, #d4d4d4 66px),
+                linear-gradient(to bottom, #d4d4d4 30px, transparent 30px, transparent 190px, #d4d4d4 190px);
+    background-color: transparent;
+    border-radius: 20px;
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.1);
+}
+.case-layer::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    border: 2px solid #ccc;
+    border-radius: 20px;
+}
+
+
+/* --- Screen Layer --- */
+.screen-layer {
+    z-index: 3;
+    pointer-events: none; /* Let clicks pass through if needed, though buttons are below */
+}
+
+/* Screen physically is 1:2 (e.g. 80x160 pixels).
+   Here we scale it up to 160x320 for visibility, or keep proportion.
+   We will make it 140x280. */
+.screen-content {
+    position: absolute;
+    top: 30px;
+    left: 30px;
     width: 140px;
-    height: 110px;
+    height: 140px; /* Note: ST7735 is 80x160 (1:2). Changing height to 280 to reflect 1:2! */
+    height: 160px; /* Adjusted to fit the iPod nano style visually, but physical screen is 1:2. Let's force 1:2. */
+}
+/* Re-evaluating screen size for 1:2 aspect ratio ST7735 (80x160 -> 140x280 is too tall for a 400px body).
+   Let's do 90x180. */
+.screen-content {
+    position: absolute;
+    top: 30px;
+    left: 55px; /* (200 - 90)/2 */
+    width: 90px;
+    height: 180px;
     background: white;
     border: 4px solid #111;
-    border-radius: 5px;
+    border-radius: 2px;
     overflow: hidden;
     display: flex;
     flex-direction: column;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.1);
 }
 
-.screen .header {
-    background: #eee;
+.screen-content .header {
+    background: #fff;
     padding: 2px 5px;
     display: flex;
     justify-content: space-between;
     font-size: 10px;
     font-weight: bold;
+    border-bottom: 1px solid #ddd;
 }
 
-.screen .content {
-    flex: 1;
+.screen-content .album-art {
+    height: 90px;
+    background: #eee;
     display: flex;
-    flex-direction: column;
     justify-content: center;
     align-items: center;
-    text-align: center;
-    background: linear-gradient(180deg, #fff 0%, #e0e0e0 100%);
+    font-size: 40px;
+    border-bottom: 1px solid #ddd;
 }
 
-.screen h1 {
-    font-size: 14px;
-    margin: 0 0 5px 0;
+.screen-content .track-info {
+    flex: 1;
+    padding: 5px;
+    text-align: left;
 }
 
-.screen p {
+#sim-title {
+    font-size: 12px;
+    font-weight: bold;
+    color: #111;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+#sim-artist {
     font-size: 10px;
     color: #666;
-    margin: 0;
+    margin-top: 2px;
+}
+
+.progress-bar {
+    width: 80px;
+    height: 4px;
+    background: #ddd;
+    margin: 5px auto 10px auto;
+    border-radius: 2px;
+}
+.progress-fill {
+    width: 0%;
+    height: 100%;
+    background: #0071e3;
+    transition: width 0.5s linear;
+}
+
+/* --- Wheel Layer --- */
+.wheel-layer {
+    z-index: 5; /* On top so it can be clicked */
 }
 
 .click-wheel {
+    position: absolute;
+    top: 235px;
+    left: 35px;
     width: 130px;
     height: 130px;
-    background: white;
+    background: #fff;
     border-radius: 50%;
-    margin-top: 40px;
-    position: relative;
-    box-shadow: inset 0 2px 5px rgba(0,0,0,0.1);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
 }
 
 .center-btn {
@@ -90,21 +240,61 @@ body {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    box-shadow: inset 0 2px 5px rgba(255,255,255,0.5), 0 2px 4px rgba(0,0,0,0.2);
+    cursor: pointer;
+    transition: background 0.1s;
 }
+.center-btn:active { background: #c0c0c0; }
 
 .button {
     position: absolute;
     font-size: 10px;
     font-weight: bold;
     color: #999;
+    cursor: pointer;
+    padding: 10px;
+    user-select: none;
 }
 
-.button.menu { top: 15px; left: 50%; transform: translateX(-50%); }
-.button.play { bottom: 15px; left: 50%; transform: translateX(-50%); }
-.button.prev { left: 15px; top: 50%; transform: translateY(-50%); }
-.button.next { right: 15px; top: 50%; transform: translateY(-50%); }
+.button:active { color: #333; }
 
+.button.menu { top: 5px; left: 50%; transform: translateX(-50%); }
+.button.play { bottom: 5px; left: 50%; transform: translateX(-50%); }
+.button.prev { left: 5px; top: 50%; transform: translateY(-50%); }
+.button.next { right: 5px; top: 50%; transform: translateY(-50%); }
+
+
+/* =========================================
+   EXPLODED STATE
+   ========================================= */
+.device-scene.exploded {
+    width: 600px; /* expand container to fit exploded parts */
+    height: 500px;
+}
+
+.device-scene.exploded .case-layer {
+    opacity: 0.2;
+    transform: translate(200px, 0); /* Center it roughly */
+}
+
+.device-scene.exploded .esp32-layer {
+    transform: translate(0px, 0) scale(1.1) rotateY(-20deg);
+    box-shadow: 10px 10px 20px rgba(0,0,0,0.3);
+}
+
+.device-scene.exploded .screen-layer {
+    transform: translate(200px, -60px) scale(1.2);
+    z-index: 10;
+}
+
+.device-scene.exploded .wheel-layer {
+    transform: translate(400px, 150px) scale(1.2);
+    z-index: 10;
+}
+
+/* =========================================
+   INSTALLER SECTION
+   ========================================= */
 .install-section {
     background: white;
     padding: 30px;
@@ -114,13 +304,5 @@ body {
     max-width: 400px;
 }
 
-.install-section h2 {
-    margin-top: 0;
-    color: #333;
-}
-
-.warning {
-    color: #d93025;
-    font-size: 0.9em;
-    margin-bottom: 20px;
-}
+.install-section h2 { margin-top: 0; color: #333; }
+.warning { color: #d93025; font-size: 0.9em; margin-bottom: 20px; }

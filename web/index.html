@@ -10,23 +10,52 @@
 </head>
 <body>
     <div class="container">
-        <div class="ipod-frame">
-            <div class="screen">
-                <div class="header">
-                    <span>▶</span>
-                    <span>100%</span>
+
+        <div class="simulation-section">
+            <button id="toggleExplodeBtn" class="action-btn">Убрать корпус и раздвинуть детали</button>
+            <div class="device-scene" id="deviceScene">
+
+                <!-- ESP32 Board -->
+                <div class="layer esp32-layer">
+                    <div class="chip">ESP32-C3</div>
+                    <div class="antenna"></div>
                 </div>
-                <div class="content">
-                    <h1>Spotify Remote</h1>
-                    <p>Прошивка v1.0</p>
+
+                <!-- Case -->
+                <div class="layer case-layer">
+                    <div class="case-hole-screen"></div>
+                    <div class="case-hole-wheel"></div>
                 </div>
-            </div>
-            <div class="click-wheel">
-                <div class="button menu">MENU</div>
-                <div class="button prev">|&lt;&lt;</div>
-                <div class="button next">&gt;&gt;|</div>
-                <div class="button play">&gt;||</div>
-                <div class="center-btn"></div>
+
+                <!-- Screen (1:2) -->
+                <div class="layer screen-layer">
+                    <div class="screen-content">
+                        <div class="header">
+                            <span id="sim-play-icon">⏸</span>
+                            <span>100%</span>
+                        </div>
+                        <div class="album-art" id="sim-album">🎵</div>
+                        <div class="track-info">
+                            <div id="sim-title">Song Title</div>
+                            <div id="sim-artist">Artist</div>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="sim-progress"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Click Wheel / Buttons -->
+                <div class="layer wheel-layer">
+                    <div class="click-wheel">
+                        <div class="button menu" data-btn="menu">MENU</div>
+                        <div class="button prev" data-btn="prev">|&lt;&lt;</div>
+                        <div class="button next" data-btn="next">&gt;&gt;|</div>
+                        <div class="button play" data-btn="play">&gt;||</div>
+                        <div class="center-btn" data-btn="select"></div>
+                    </div>
+                </div>
+
             </div>
         </div>
 
@@ -34,9 +63,9 @@
             <h2>Установка прошивки</h2>
             <p>Подключите ESP32-C3 к USB и нажмите кнопку ниже.</p>
             <p class="warning">Внимание: Поддерживаются только браузеры на базе Chromium (Chrome, Edge, Opera) на ПК.</p>
-
             <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
         </div>
     </div>
+    <script src="app.js"></script>
 </body>
 </html>
