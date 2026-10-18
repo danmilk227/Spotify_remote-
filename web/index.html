@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Установка прошивки Spotify iPod</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <script type="module" src="https://unpkg.com/esp-web-tools@9.0.0/dist/web/install-button.js?module"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="ipod-frame">
+            <div class="screen">
+                <div class="header">
+                    <span>▶</span>
+                    <span>100%</span>
+                </div>
+                <div class="content">
+                    <h1>Spotify Remote</h1>
+                    <p>Прошивка v1.0</p>
+                </div>
+            </div>
+            <div class="click-wheel">
+                <div class="button menu">MENU</div>
+                <div class="button prev">|&lt;&lt;</div>
+                <div class="button next">&gt;&gt;|</div>
+                <div class="button play">&gt;||</div>
+                <div class="center-btn"></div>
+            </div>
+        </div>
+
+        <div class="install-section">
+            <h2>Установка прошивки</h2>
+            <p>Подключите ESP32-C3 к USB и нажмите кнопку ниже.</p>
+            <p class="warning">Внимание: Поддерживаются только браузеры на базе Chromium (Chrome, Edge, Opera) на ПК.</p>
+
+            <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+        </div>
+    </div>
+</body>
+</html>
