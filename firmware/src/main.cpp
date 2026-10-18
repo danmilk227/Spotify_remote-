@@ -238,16 +238,17 @@ void loop() {
             } else {
                 ui.updatePlayer(track.title, track.artist, track.progressMs, track.durationMs, track.isPlaying, track.isLiked);
 
-            // Adaptive polling
-            currentUpdateInterval = track.isPlaying ? 2500 : 8000;
+                // Adaptive polling
+                currentUpdateInterval = track.isPlaying ? 2500 : 8000;
 
-            if (track.trackId != lastTrackId) {
-                lastTrackId = track.trackId;
-                uint8_t* imgBuffer = nullptr;
-                size_t imgSize = 0;
-                if (spotify.fetchAlbumArt(&imgBuffer, &imgSize)) {
-                    ui.drawAlbumCover(imgBuffer, imgSize);
-                    free(imgBuffer);
+                if (track.trackId != lastTrackId) {
+                    lastTrackId = track.trackId;
+                    uint8_t* imgBuffer = nullptr;
+                    size_t imgSize = 0;
+                    if (spotify.fetchAlbumArt(&imgBuffer, &imgSize)) {
+                        ui.drawAlbumCover(imgBuffer, imgSize);
+                        free(imgBuffer);
+                    }
                 }
             }
         }
@@ -300,5 +301,4 @@ void loop() {
         spotify.toggleLike();
         lastUpdate = 0;
     }
-}
 }
