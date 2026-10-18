@@ -3,7 +3,10 @@
 
 DisplayUI* instance = nullptr;
 
-DisplayUI::DisplayUI() : currentProgress(0), currentDuration(1), currentIsPlaying(false), currentIsLiked(false), isLandscape(false) {
+#include "config.h"
+
+DisplayUI::DisplayUI() : currentTitle(""), currentArtist(""), titleScrollOffset(0), artistScrollOffset(0), lastMarqueeUpdate(0),
+                         currentProgress(0), currentDuration(1), currentIsPlaying(false), currentIsLiked(false), isLandscape(false) {
     instance = this;
 }
 
@@ -27,12 +30,35 @@ void DisplayUI::init(bool landscape) {
 
 void DisplayUI::showSplashScreen() {
     tft.fillScreen(TFT_WHITE);
-    tft.setCursor(15, 60);
+    tft.setCursor(isLandscape ? 50 : 15, isLandscape ? 30 : 60);
     tft.setTextSize(2);
     tft.print("iPod");
-    tft.setCursor(15, 80);
+    tft.setCursor(isLandscape ? 30 : 15, isLandscape ? 50 : 80);
     tft.setTextSize(1);
     tft.print("Spotify Edition");
+    tft.setCursor(isLandscape ? 60 : 25, isLandscape ? 65 : 100);
+    tft.print("v" FIRMWARE_VERSION);
+}
+
+void DisplayUI::showSettingsMenu(int selectedIndex) {
+    tft.fillScreen(TFT_WHITE);
+    tft.fillRect(0, 0, isLandscape ? 160 : 80, 15, TFT_LIGHTGREY);
+    tft.setTextColor(TFT_BLACK, TFT_LIGHTGREY);
+    tft.setCursor(5, 4);
+    tft.print("Settings");
+
+    const char* items[] = {"Back", "Rotate", "WiFi Reset"};
+    for (int i = 0; i < 3; i++) {
+        int y = 25 + (i * 15);
+        if (i == selectedIndex) {
+            tft.fillRect(0, y - 2, isLandscape ? 160 : 80, 15, TFT_BLUE);
+            tft.setTextColor(TFT_WHITE, TFT_BLUE);
+        } else {
+            tft.setTextColor(TFT_BLACK, TFT_WHITE);
+        }
+        tft.setCursor(5, y);
+        tft.print(items[i]);
+    }
 }
 
 void DisplayUI::showSetupScreen(const String& ipAddress) {
@@ -81,6 +107,12 @@ void DisplayUI::drawBattery() {
     tft.fillRect(x_offset + 2, 5, 11, 4, TFT_BLACK); // Full battery
 }
 
+void DisplayUI::drawHeart(int x, int y, uint16_t color) {
+    tft.fillTriangle(x, y+2, x+3, y-1, x+6, y+2, color);
+    tft.fillTriangle(x+6, y+2, x+9, y-1, x+12, y+2, color);
+    tft.fillTriangle(x, y+2, x+12, y+2, x+6, y+8, color);
+}
+
 void DisplayUI::drawProgressBar(int progressMs, int durationMs) {
     int barWidth = isLandscape ? 70 : 70;
     int x = isLandscape ? 85 : 5;
@@ -97,43 +129,23 @@ void DisplayUI::drawProgressBar(int progressMs, int durationMs) {
 
 void DisplayUI::updatePlayer(const String& title, const String& artist, int progressMs, int durationMs, bool isPlaying, bool isLiked) {
     if (title != currentTitle || artist != currentArtist || isLiked != currentIsLiked) {
-        if (isLandscape) {
-            tft.fillRect(85, 20, 75, 40, TFT_WHITE);
-            tft.setTextColor(TFT_BLACK, TFT_WHITE);
-            tft.setTextWrap(false);
-            tft.setCursor(85, 25);
-            tft.print(title.substring(0, 11)); // Truncate to fit
-
-            tft.setTextColor(TFT_DARKGREY, TFT_WHITE);
-            tft.setCursor(85, 45);
-            tft.print(artist.substring(0, 11));
-
-            if (isLiked) {
-                tft.setTextColor(TFT_RED, TFT_WHITE);
-                tft.setCursor(140, 45);
-                tft.print("<3"); // Heart
-            }
-        } else {
-            tft.fillRect(0, 120, 80, 40, TFT_WHITE);
-            tft.setTextColor(TFT_BLACK, TFT_WHITE);
-            tft.setTextWrap(false);
-            tft.setCursor(5, 120);
-            tft.print(title.substring(0, 12)); // Truncate to fit
-
-            tft.setTextColor(TFT_DARKGREY, TFT_WHITE);
-            tft.setCursor(5, 135);
-            tft.print(artist.substring(0, 12));
-
-            if (isLiked) {
-                tft.setTextColor(TFT_RED, TFT_WHITE);
-                tft.setCursor(65, 135);
-                tft.print("<3"); // Heart
-            }
-        }
-
         currentTitle = title;
         currentArtist = artist;
         currentIsLiked = isLiked;
+        titleScrollOffset = 0;
+        artistScrollOffset = 0;
+        lastMarqueeUpdate = millis();
+
+        if (isLandscape) {
+            tft.fillRect(85, 20, 75, 40, TFT_WHITE);
+            if (isLiked) drawHeart(140, 45, TFT_RED);
+        } else {
+            tft.fillRect(0, 120, 80, 40, TFT_WHITE);
+            if (isLiked) drawHeart(65, 135, TFT_RED);
+        }
+
+        // Force an immediate marquee draw
+        tickMarquee();
     }
 
     if (isPlaying != currentIsPlaying) {
@@ -142,6 +154,55 @@ void DisplayUI::updatePlayer(const String& title, const String& artist, int prog
     }
 
     drawProgressBar(progressMs, durationMs);
+}
+
+void DisplayUI::tickMarquee() {
+    if (currentTitle.length() == 0 && currentArtist.length() == 0) return;
+
+    if (millis() - lastMarqueeUpdate > 250) {
+        lastMarqueeUpdate = millis();
+
+        int maxChars = isLandscape ? 11 : 12;
+        String t = currentTitle;
+        String a = currentArtist;
+
+        // If string is longer than screen, scroll it
+        if (t.length() > maxChars) {
+            t = t + "   " + t; // Add gap for looping
+            t = t.substring(titleScrollOffset, titleScrollOffset + maxChars);
+            titleScrollOffset++;
+            if (titleScrollOffset > currentTitle.length() + 3) titleScrollOffset = 0;
+        }
+
+        if (a.length() > maxChars) {
+            a = a + "   " + a;
+            a = a.substring(artistScrollOffset, artistScrollOffset + maxChars);
+            artistScrollOffset++;
+            if (artistScrollOffset > currentArtist.length() + 3) artistScrollOffset = 0;
+        }
+
+        if (isLandscape) {
+            tft.fillRect(85, 20, 70, 20, TFT_WHITE);
+            tft.setTextColor(TFT_BLACK, TFT_WHITE);
+            tft.setCursor(85, 25);
+            tft.print(t);
+
+            tft.fillRect(85, 40, 50, 15, TFT_WHITE); // Don't overwrite heart
+            tft.setTextColor(TFT_DARKGREY, TFT_WHITE);
+            tft.setCursor(85, 45);
+            tft.print(a);
+        } else {
+            tft.fillRect(0, 120, 80, 15, TFT_WHITE);
+            tft.setTextColor(TFT_BLACK, TFT_WHITE);
+            tft.setCursor(5, 120);
+            tft.print(t);
+
+            tft.fillRect(0, 135, 60, 15, TFT_WHITE); // Don't overwrite heart
+            tft.setTextColor(TFT_DARKGREY, TFT_WHITE);
+            tft.setCursor(5, 135);
+            tft.print(a);
+        }
+    }
 }
 
 void DisplayUI::drawAlbumCover(const uint8_t* jpegData, size_t jpegSize) {

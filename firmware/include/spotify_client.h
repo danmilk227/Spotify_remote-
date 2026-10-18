@@ -43,7 +43,7 @@ private:
     TrackInfo currentTrack;
 
     bool refreshAccessToken();
-    String makeApiRequest(const char* endpoint, const char* method = "GET", const char* payload = nullptr);
+    String makeApiRequest(const char* endpoint, const char* method = "GET", const char* payload = nullptr, int* outHttpCode = nullptr);
     void loadCredentials();
     void saveCredentials();
 };

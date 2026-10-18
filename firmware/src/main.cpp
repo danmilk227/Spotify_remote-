@@ -2,21 +2,30 @@
 #include <WiFiManager.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <esp_task_wdt.h>
 #include "config.h"
 #include "display_ui.h"
 #include "spotify_client.h"
+
+#define WDT_TIMEOUT 15 // 15 seconds WDT
 
 DisplayUI ui;
 SpotifyClient spotify;
 WebServer server(80);
 
 unsigned long lastUpdate = 0;
-const unsigned long UPDATE_INTERVAL = 5000; // 5 seconds
+unsigned long currentUpdateInterval = 2500; // Fast polling initial
 
 // Button debouncing variables
 unsigned long lastBtnPress[5] = {0, 0, 0, 0, 0};
 int lastBtnState[5] = {HIGH, HIGH, HIGH, HIGH, HIGH}; // HIGH = unpressed
 const int DEBOUNCE_DELAY = 50;
+
+// Menu State
+bool inSettingsMenu = false;
+int menuSelection = 0;
+unsigned long menuBtnPressStart = 0;
+bool menuBtnLongPressed = false;
 
 String lastTrackId = "";
 
@@ -99,6 +108,9 @@ void setup() {
         ESP.restart();
     }
 
+    esp_task_wdt_init(WDT_TIMEOUT, true);
+    esp_task_wdt_add(NULL);
+
     if (!spotify.init()) {
         ui.showSetupScreen(WiFi.localIP().toString());
         server.on("/", handleRoot);
@@ -106,6 +118,7 @@ void setup() {
         server.begin();
 
         while(!spotify.hasCredentials()) {
+            esp_task_wdt_reset(); // Keep WDT happy during setup
             server.handleClient();
             delay(10);
         }
@@ -114,11 +127,85 @@ void setup() {
     ui.showMessage("Connecting Spotify...");
 }
 
+void handleMenuLogic() {
+    if (checkButton(BTN_DOWN_PIN, 1)) {
+        menuSelection = (menuSelection + 1) % 3;
+        ui.showSettingsMenu(menuSelection);
+    }
+    if (checkButton(BTN_UP_PIN, 0)) {
+        menuSelection = (menuSelection - 1 + 3) % 3;
+        ui.showSettingsMenu(menuSelection);
+    }
+    if (checkButton(BTN_CENTER_PIN, 4)) {
+        if (menuSelection == 0) {
+            inSettingsMenu = false;
+            lastTrackId = ""; // force redraw
+        } else if (menuSelection == 1) {
+            Preferences prefs;
+            prefs.begin("settings", false);
+            bool isLand = !prefs.getBool("landscape", false);
+            prefs.putBool("landscape", isLand);
+            prefs.end();
+            ui.showMessage("Rebooting...");
+            delay(1000);
+            ESP.restart();
+        } else if (menuSelection == 2) {
+            WiFiManager wm;
+            wm.resetSettings();
+            ui.showMessage("WiFi Reset! Rebooting...");
+            delay(1000);
+            ESP.restart();
+        }
+    }
+}
+
 void loop() {
-    if (millis() - lastUpdate > UPDATE_INTERVAL) {
+    esp_task_wdt_reset();
+
+    // Auto-reconnect WiFi if dropped (rate-limited)
+    static unsigned long lastWiFiCheck = 0;
+    if (WiFi.status() != WL_CONNECTED && (millis() - lastWiFiCheck > 10000)) {
+        lastWiFiCheck = millis();
+        WiFi.reconnect();
+    }
+
+    // Handle Long Press on Menu Button (GPIO 0)
+    int menuState = digitalRead(BTN_UP_PIN);
+    if (menuState == LOW && lastBtnState[0] == HIGH) {
+        menuBtnPressStart = millis();
+        menuBtnLongPressed = false;
+    } else if (menuState == LOW && !menuBtnLongPressed && (millis() - menuBtnPressStart > 1500)) {
+        menuBtnLongPressed = true;
+        inSettingsMenu = !inSettingsMenu;
+        if (inSettingsMenu) {
+            menuSelection = 0;
+            ui.showSettingsMenu(menuSelection);
+        } else {
+            lastTrackId = ""; // force redraw of player
+            lastUpdate = 0; // force immediate fetch
+        }
+    }
+    // Update button state array for Menu button manually for long press
+    if (menuState != lastBtnState[0] && (millis() - lastBtnPress[0] > DEBOUNCE_DELAY)) {
+         lastBtnState[0] = menuState;
+         lastBtnPress[0] = millis();
+    }
+
+
+    if (inSettingsMenu) {
+        handleMenuLogic();
+        return; // Don't do spotify stuff while in menu
+    }
+
+    ui.tickMarquee();
+
+    if (millis() - lastUpdate > currentUpdateInterval) {
         if (spotify.updateTrackInfo()) {
             const TrackInfo& track = spotify.getTrackInfo();
             ui.updatePlayer(track.title, track.artist, track.progressMs, track.durationMs, track.isPlaying, track.isLiked);
+
+            // Adaptive polling
+            currentUpdateInterval = track.isPlaying ? 2500 : 8000;
 
             if (track.trackId != lastTrackId) {
                 lastTrackId = track.trackId;
@@ -133,25 +220,23 @@ void loop() {
         lastUpdate = millis(); // Update after network requests
     }
 
-    // Handle Buttons
+    // Handle Buttons (Player Controls)
     if (checkButton(BTN_DOWN_PIN, 1)) {
         spotify.playPause();
-        delay(500); // Give API time to update
-        spotify.updateTrackInfo();
+        lastUpdate = 0; // Immediate refresh
     }
     if (checkButton(BTN_RIGHT_PIN, 3)) {
         spotify.nextTrack();
-        lastTrackId = ""; // Force album art reload
-        delay(500);
+        lastTrackId = "";
+        lastUpdate = 0;
     }
     if (checkButton(BTN_LEFT_PIN, 2)) {
         spotify.prevTrack();
-        lastTrackId = ""; // Force album art reload
-        delay(500);
+        lastTrackId = "";
+        lastUpdate = 0;
     }
     if (checkButton(BTN_CENTER_PIN, 4)) {
         spotify.toggleLike();
-        delay(500);
-        spotify.updateTrackInfo(); // Update heart status
+        lastUpdate = 0;
     }
 }

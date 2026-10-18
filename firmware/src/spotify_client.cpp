@@ -3,6 +3,7 @@
 #include <WiFiClientSecure.h>
 #include <Preferences.h>
 #include <base64.h>
+#include "config.h"
 
 Preferences preferences;
 
@@ -46,10 +47,10 @@ bool SpotifyClient::refreshAccessToken() {
     }
 
     WiFiClientSecure client;
-    client.setInsecure();
+    client.setCACert(spotify_ca_cert);
     HTTPClient http;
 
-    http.begin(client, "https://accounts.spotify.com/api/token");
+    http.begin(client, SPOTIFY_TOKEN_URL);
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
     String auth = clientId + ":" + clientSecret;
@@ -70,20 +71,25 @@ bool SpotifyClient::refreshAccessToken() {
         int expiresIn = doc["expires_in"].as<int>();
         tokenExpirationTime = millis() + (expiresIn - 60) * 1000; // Refresh 60s early
         success = true;
+    } else {
+        Serial.printf("Failed to refresh token, HTTP Code: %d\n", httpCode);
     }
 
     http.end();
     return success;
 }
 
-String SpotifyClient::makeApiRequest(const char* endpoint, const char* method, const char* payload) {
-    if (!refreshAccessToken()) return "";
+String SpotifyClient::makeApiRequest(const char* endpoint, const char* method, const char* payload, int* outHttpCode) {
+    if (!refreshAccessToken()) {
+        if (outHttpCode) *outHttpCode = -1;
+        return "";
+    }
 
     WiFiClientSecure client;
-    client.setInsecure();
+    client.setCACert(spotify_ca_cert);
     HTTPClient http;
 
-    String url = String("https://api.spotify.com/v1") + endpoint;
+    String url = String(SPOTIFY_API_BASE) + endpoint;
     http.begin(client, url);
     http.addHeader("Authorization", "Bearer " + accessToken);
 
@@ -95,9 +101,13 @@ String SpotifyClient::makeApiRequest(const char* endpoint, const char* method, c
     } else if (String(method) == "PUT") {
         http.addHeader("Content-Length", "0");
         httpCode = http.PUT(payload ? payload : "");
+    } else if (String(method) == "DELETE") {
+        httpCode = http.sendRequest("DELETE", payload ? payload : "");
     } else {
         httpCode = http.sendRequest(method, payload ? payload : "");
     }
+
+    if (outHttpCode) *outHttpCode = httpCode;
 
     String response = "";
     if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_NO_CONTENT) {
@@ -109,7 +119,30 @@ String SpotifyClient::makeApiRequest(const char* endpoint, const char* method, c
 }
 
 bool SpotifyClient::updateTrackInfo() {
-    String response = makeApiRequest("/me/player/currently-playing");
+    int httpCode = 0;
+    String response = makeApiRequest("/me/player/currently-playing", "GET", nullptr, &httpCode);
+
+    if (httpCode == 204) {
+        // No active device playing
+        currentTrack.title = "No active device";
+        currentTrack.artist = "";
+        currentTrack.isPlaying = false;
+        currentTrack.albumArtUrl = "";
+        return true;
+    } else if (httpCode == 401) {
+        // Force token refresh on next tick
+        // TODO: In a production device, we should consider PKCE (Proof Key for Code Exchange)
+        // so we don't have to store the Client Secret in NVS in plain text.
+        tokenExpirationTime = 0;
+        return false;
+    } else if (httpCode == 429) {
+        currentTrack.title = "Rate limited";
+        return false;
+    } else if (httpCode < 0) {
+        currentTrack.title = "Network error";
+        return false;
+    }
+
     if (response.length() == 0) return false;
 
     // Use a filter to skip massive arrays (like available_markets) to save memory
@@ -142,8 +175,9 @@ bool SpotifyClient::updateTrackInfo() {
         }
 
         // Check if liked
-        String likeResponse = makeApiRequest(("/me/tracks/contains?ids=" + currentTrack.trackId).c_str());
-        if (likeResponse.length() > 0) {
+        int likeHttpCode = 0;
+        String likeResponse = makeApiRequest(("/me/tracks/contains?ids=" + currentTrack.trackId).c_str(), "GET", nullptr, &likeHttpCode);
+        if (likeResponse.length() > 0 && likeHttpCode == HTTP_CODE_OK) {
             DynamicJsonDocument likeDoc(256);
             deserializeJson(likeDoc, likeResponse);
             currentTrack.isLiked = likeDoc[0].as<bool>();
@@ -151,7 +185,9 @@ bool SpotifyClient::updateTrackInfo() {
 
         return true;
     }
-    return false;
+
+    currentTrack.isPlaying = false;
+    return true; // Parsed successfully but nothing playing
 }
 
 void SpotifyClient::playPause() {
@@ -184,7 +220,7 @@ bool SpotifyClient::fetchAlbumArt(uint8_t** buffer, size_t* size) {
     if (currentTrack.albumArtUrl.length() == 0) return false;
 
     WiFiClientSecure client;
-    client.setInsecure();
+    client.setCACert(spotify_ca_cert);
     HTTPClient http;
 
     http.begin(client, currentTrack.albumArtUrl);
