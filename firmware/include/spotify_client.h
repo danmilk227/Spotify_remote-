@@ -12,6 +12,8 @@ struct TrackInfo {
     bool isPlaying;
     bool isLiked;
     String trackId;
+    int volumePercent;
+    String errorMessage;
 };
 
 class SpotifyClient {
@@ -20,6 +22,7 @@ public:
     bool init();
     void setCredentials(const String& clientId, const String& clientSecret, const String& refreshToken);
     bool hasCredentials();
+    void clearCredentials();
 
     bool updateTrackInfo();
     const TrackInfo& getTrackInfo() const { return currentTrack; }
@@ -29,6 +32,7 @@ public:
     void nextTrack();
     void prevTrack();
     void toggleLike();
+    void setVolume(int volume_percent);
 
     // Album Art
     bool fetchAlbumArt(uint8_t** buffer, size_t* size);

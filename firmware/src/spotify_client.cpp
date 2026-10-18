@@ -41,6 +41,13 @@ bool SpotifyClient::hasCredentials() {
     return clientId.length() > 0 && clientSecret.length() > 0 && refreshToken.length() > 0;
 }
 
+void SpotifyClient::clearCredentials() {
+    clientId = "";
+    clientSecret = "";
+    refreshToken = "";
+    saveCredentials();
+}
+
 bool SpotifyClient::refreshAccessToken() {
     if (millis() < tokenExpirationTime && accessToken.length() > 0) {
         return true;
@@ -120,33 +127,34 @@ String SpotifyClient::makeApiRequest(const char* endpoint, const char* method, c
 
 bool SpotifyClient::updateTrackInfo() {
     int httpCode = 0;
-    String response = makeApiRequest("/me/player/currently-playing", "GET", nullptr, &httpCode);
+    currentTrack.errorMessage = ""; // Clear errors
+
+    String response = makeApiRequest("/me/player", "GET", nullptr, &httpCode); // Use /player to get volume as well
 
     if (httpCode == 204) {
-        // No active device playing
-        currentTrack.title = "No active device";
-        currentTrack.artist = "";
+        currentTrack.errorMessage = "No active device";
         currentTrack.isPlaying = false;
         currentTrack.albumArtUrl = "";
         return true;
     } else if (httpCode == 401) {
-        // Force token refresh on next tick
-        // TODO: In a production device, we should consider PKCE (Proof Key for Code Exchange)
-        // so we don't have to store the Client Secret in NVS in plain text.
         tokenExpirationTime = 0;
+        currentTrack.errorMessage = "Re-auth needed";
         return false;
     } else if (httpCode == 429) {
-        currentTrack.title = "Rate limited";
+        currentTrack.errorMessage = "Rate limited";
+        return false;
+    } else if (httpCode == 403) {
+        currentTrack.errorMessage = "Premium required";
         return false;
     } else if (httpCode < 0) {
-        currentTrack.title = "Network error";
+        currentTrack.errorMessage = "Network error";
         return false;
     }
 
     if (response.length() == 0) return false;
 
     // Use a filter to skip massive arrays (like available_markets) to save memory
-    StaticJsonDocument<200> filter;
+    StaticJsonDocument<256> filter;
     filter["is_playing"] = true;
     filter["progress_ms"] = true;
     filter["item"]["duration_ms"] = true;
@@ -154,10 +162,18 @@ bool SpotifyClient::updateTrackInfo() {
     filter["item"]["artists"][0]["name"] = true;
     filter["item"]["id"] = true;
     filter["item"]["album"]["images"][0]["url"] = true;
+    filter["device"]["volume_percent"] = true;
 
     DynamicJsonDocument doc(1024);
     DeserializationError error = deserializeJson(doc, response, DeserializationOption::Filter(filter));
-    if (error) return false;
+    if (error) {
+        currentTrack.errorMessage = "JSON Parse Error";
+        return false;
+    }
+
+    if (!doc["device"].isNull()) {
+        currentTrack.volumePercent = doc["device"]["volume_percent"].as<int>();
+    }
 
     if (!doc["item"].isNull()) {
         currentTrack.isPlaying = doc["is_playing"].as<bool>();
@@ -214,6 +230,14 @@ void SpotifyClient::toggleLike() {
     } else {
         makeApiRequest(endpoint.c_str(), "PUT");
     }
+}
+
+void SpotifyClient::setVolume(int volume_percent) {
+    if (volume_percent < 0) volume_percent = 0;
+    if (volume_percent > 100) volume_percent = 100;
+    String endpoint = "/me/player/volume?volume_percent=" + String(volume_percent);
+    makeApiRequest(endpoint.c_str(), "PUT");
+    currentTrack.volumePercent = volume_percent;
 }
 
 bool SpotifyClient::fetchAlbumArt(uint8_t** buffer, size_t* size) {

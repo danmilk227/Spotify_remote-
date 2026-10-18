@@ -27,6 +27,14 @@ int menuSelection = 0;
 unsigned long menuBtnPressStart = 0;
 bool menuBtnLongPressed = false;
 
+// Hardware State
+int currentBrightness = 100;
+Theme currentTheme = THEME_CLASSIC;
+
+// Vol Control
+unsigned long leftBtnPressStart = 0;
+unsigned long rightBtnPressStart = 0;
+
 String lastTrackId = "";
 
 void handleRoot() {
@@ -92,9 +100,11 @@ void setup() {
     Preferences prefs;
     prefs.begin("settings", true);
     bool isLandscape = prefs.getBool("landscape", false);
+    currentBrightness = prefs.getInt("brightness", 100);
+    currentTheme = (Theme)prefs.getInt("theme", THEME_CLASSIC);
     prefs.end();
 
-    ui.init(isLandscape);
+    ui.init(isLandscape, currentTheme, currentBrightness);
     ui.showSplashScreen();
     delay(2000);
 
@@ -129,33 +139,52 @@ void setup() {
 
 void handleMenuLogic() {
     if (checkButton(BTN_DOWN_PIN, 1)) {
-        menuSelection = (menuSelection + 1) % 3;
-        ui.showSettingsMenu(menuSelection);
+        menuSelection = (menuSelection + 1) % 7;
+        ui.showSettingsMenu(menuSelection, WiFi.localIP().toString());
     }
     if (checkButton(BTN_UP_PIN, 0)) {
-        menuSelection = (menuSelection - 1 + 3) % 3;
-        ui.showSettingsMenu(menuSelection);
+        menuSelection = (menuSelection - 1 + 7) % 7;
+        ui.showSettingsMenu(menuSelection, WiFi.localIP().toString());
     }
     if (checkButton(BTN_CENTER_PIN, 4)) {
-        if (menuSelection == 0) {
+        Preferences prefs;
+        prefs.begin("settings", false);
+
+        if (menuSelection == 0) { // Back
             inSettingsMenu = false;
             lastTrackId = ""; // force redraw
-        } else if (menuSelection == 1) {
-            Preferences prefs;
-            prefs.begin("settings", false);
+        } else if (menuSelection == 1) { // Theme
+            currentTheme = (currentTheme == THEME_CLASSIC) ? THEME_SPOTIFY : THEME_CLASSIC;
+            prefs.putInt("theme", currentTheme);
+            ui.setTheme(currentTheme);
+            ui.showSettingsMenu(menuSelection, WiFi.localIP().toString());
+        } else if (menuSelection == 2) { // Rotate
             bool isLand = !prefs.getBool("landscape", false);
             prefs.putBool("landscape", isLand);
-            prefs.end();
             ui.showMessage("Rebooting...");
             delay(1000);
             ESP.restart();
-        } else if (menuSelection == 2) {
+        } else if (menuSelection == 3) { // Brightness
+            currentBrightness -= 25;
+            if (currentBrightness <= 0) currentBrightness = 100;
+            prefs.putInt("brightness", currentBrightness);
+            ui.setBrightness(currentBrightness);
+            ui.showSettingsMenu(menuSelection, WiFi.localIP().toString());
+        } else if (menuSelection == 4) { // WiFi RST
             WiFiManager wm;
             wm.resetSettings();
             ui.showMessage("WiFi Reset! Rebooting...");
             delay(1000);
             ESP.restart();
+        } else if (menuSelection == 5) { // Clear Spotify
+            spotify.clearCredentials();
+            ui.showMessage("Creds Cleared! Rebooting...");
+            delay(1000);
+            ESP.restart();
+        } else if (menuSelection == 6) { // About
+            // Do nothing, IP is drawn
         }
+        prefs.end();
     }
 }
 
@@ -179,7 +208,7 @@ void loop() {
         inSettingsMenu = !inSettingsMenu;
         if (inSettingsMenu) {
             menuSelection = 0;
-            ui.showSettingsMenu(menuSelection);
+            ui.showSettingsMenu(menuSelection, WiFi.localIP().toString());
         } else {
             lastTrackId = ""; // force redraw of player
             lastUpdate = 0; // force immediate fetch
@@ -202,7 +231,12 @@ void loop() {
     if (millis() - lastUpdate > currentUpdateInterval) {
         if (spotify.updateTrackInfo()) {
             const TrackInfo& track = spotify.getTrackInfo();
-            ui.updatePlayer(track.title, track.artist, track.progressMs, track.durationMs, track.isPlaying, track.isLiked);
+
+            if (track.errorMessage.length() > 0) {
+                ui.showErrorScreen(track.errorMessage);
+                lastTrackId = "error"; // Force redraw when recovers
+            } else {
+                ui.updatePlayer(track.title, track.artist, track.progressMs, track.durationMs, track.isPlaying, track.isLiked);
 
             // Adaptive polling
             currentUpdateInterval = track.isPlaying ? 2500 : 8000;
@@ -225,18 +259,46 @@ void loop() {
         spotify.playPause();
         lastUpdate = 0; // Immediate refresh
     }
-    if (checkButton(BTN_RIGHT_PIN, 3)) {
-        spotify.nextTrack();
-        lastTrackId = "";
-        lastUpdate = 0;
+
+    // Right Button (Next / Vol Up)
+    int rightState = digitalRead(BTN_RIGHT_PIN);
+    if (rightState != lastBtnState[3]) {
+        if (rightState == LOW) rightBtnPressStart = millis(); // Pressed
+        else if (millis() - rightBtnPressStart < 600 && lastBtnState[3] == LOW) {
+            // Short press released
+            spotify.nextTrack();
+            lastTrackId = "";
+            lastUpdate = 0;
+        }
+        lastBtnState[3] = rightState;
+    } else if (rightState == LOW && (millis() - rightBtnPressStart > 600)) {
+        // Held down
+        rightBtnPressStart = millis(); // reset to fire again
+        spotify.setVolume(spotify.getTrackInfo().volumePercent + 5);
+        ui.showMessage("Vol " + String(spotify.getTrackInfo().volumePercent));
     }
-    if (checkButton(BTN_LEFT_PIN, 2)) {
-        spotify.prevTrack();
-        lastTrackId = "";
-        lastUpdate = 0;
+
+    // Left Button (Prev / Vol Down)
+    int leftState = digitalRead(BTN_LEFT_PIN);
+    if (leftState != lastBtnState[2]) {
+        if (leftState == LOW) leftBtnPressStart = millis(); // Pressed
+        else if (millis() - leftBtnPressStart < 600 && lastBtnState[2] == LOW) {
+            // Short press released
+            spotify.prevTrack();
+            lastTrackId = "";
+            lastUpdate = 0;
+        }
+        lastBtnState[2] = leftState;
+    } else if (leftState == LOW && (millis() - leftBtnPressStart > 600)) {
+        // Held down
+        leftBtnPressStart = millis(); // reset to fire again
+        spotify.setVolume(spotify.getTrackInfo().volumePercent - 5);
+        ui.showMessage("Vol " + String(spotify.getTrackInfo().volumePercent));
     }
+
     if (checkButton(BTN_CENTER_PIN, 4)) {
         spotify.toggleLike();
         lastUpdate = 0;
     }
+}
 }
