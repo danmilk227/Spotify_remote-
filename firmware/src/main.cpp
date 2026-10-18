@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFiManager.h>
 #include <WebServer.h>
+#include <Preferences.h>
 #include "config.h"
 #include "display_ui.h"
 #include "spotify_client.h"
@@ -14,7 +15,8 @@ const unsigned long UPDATE_INTERVAL = 5000; // 5 seconds
 
 // Button debouncing variables
 unsigned long lastBtnPress[5] = {0, 0, 0, 0, 0};
-const int DEBOUNCE_DELAY = 250;
+int lastBtnState[5] = {HIGH, HIGH, HIGH, HIGH, HIGH}; // HIGH = unpressed
+const int DEBOUNCE_DELAY = 50;
 
 String lastTrackId = "";
 
@@ -24,6 +26,11 @@ void handleRoot() {
                   "Client ID:<br><input type='text' name='clientId'><br>"
                   "Client Secret:<br><input type='text' name='clientSecret'><br>"
                   "Refresh Token:<br><input type='text' name='refreshToken'><br><br>"
+                  "Screen Orientation:<br>"
+                  "<select name='orientation'>"
+                  "<option value='portrait'>Portrait (Vertical)</option>"
+                  "<option value='landscape'>Landscape (Horizontal)</option>"
+                  "</select><br><br>"
                   "<input type='submit' value='Save'>"
                   "</form></body></html>";
     server.send(200, "text/html", html);
@@ -32,6 +39,13 @@ void handleRoot() {
 void handleSave() {
     if (server.hasArg("clientId") && server.hasArg("clientSecret") && server.hasArg("refreshToken")) {
         spotify.setCredentials(server.arg("clientId"), server.arg("clientSecret"), server.arg("refreshToken"));
+
+        bool isLandscape = (server.arg("orientation") == "landscape");
+        Preferences prefs;
+        prefs.begin("settings", false);
+        prefs.putBool("landscape", isLandscape);
+        prefs.end();
+
         server.send(200, "text/plain", "Saved! Rebooting...");
         delay(1000);
         ESP.restart();
@@ -41,11 +55,17 @@ void handleSave() {
 }
 
 bool checkButton(int pin, int index) {
-    if (digitalRead(pin) == LOW) { // Assuming buttons are pulled up
-        if (millis() - lastBtnPress[index] > DEBOUNCE_DELAY) {
-            lastBtnPress[index] = millis();
+    int currentState = digitalRead(pin);
+    if (currentState != lastBtnState[index]) {
+        lastBtnPress[index] = millis();
+    }
+
+    if ((millis() - lastBtnPress[index]) > DEBOUNCE_DELAY) {
+        if (currentState == LOW && lastBtnState[index] == HIGH) { // Button just pressed
+            lastBtnState[index] = currentState;
             return true;
         }
+        lastBtnState[index] = currentState;
     }
     return false;
 }
@@ -60,7 +80,12 @@ void setup() {
     pinMode(BTN_RIGHT_PIN, INPUT_PULLUP);
     pinMode(BTN_CENTER_PIN, INPUT_PULLUP);
 
-    ui.init();
+    Preferences prefs;
+    prefs.begin("settings", true);
+    bool isLandscape = prefs.getBool("landscape", false);
+    prefs.end();
+
+    ui.init(isLandscape);
     ui.showSplashScreen();
     delay(2000);
 

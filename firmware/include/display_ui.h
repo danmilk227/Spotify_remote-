@@ -6,7 +6,7 @@
 class DisplayUI {
 public:
     DisplayUI();
-    void init();
+    void init(bool landscape = false);
     void showSplashScreen();
     void showSetupScreen(const String& ipAddress);
     void showAuthScreen();
@@ -28,4 +28,5 @@ private:
     int currentDuration;
     bool currentIsPlaying;
     bool currentIsLiked;
+    bool isLandscape;
 };

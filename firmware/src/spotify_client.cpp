@@ -112,8 +112,18 @@ bool SpotifyClient::updateTrackInfo() {
     String response = makeApiRequest("/me/player/currently-playing");
     if (response.length() == 0) return false;
 
-    DynamicJsonDocument doc(2048);
-    DeserializationError error = deserializeJson(doc, response);
+    // Use a filter to skip massive arrays (like available_markets) to save memory
+    StaticJsonDocument<200> filter;
+    filter["is_playing"] = true;
+    filter["progress_ms"] = true;
+    filter["item"]["duration_ms"] = true;
+    filter["item"]["name"] = true;
+    filter["item"]["artists"][0]["name"] = true;
+    filter["item"]["id"] = true;
+    filter["item"]["album"]["images"][0]["url"] = true;
+
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, response, DeserializationOption::Filter(filter));
     if (error) return false;
 
     if (!doc["item"].isNull()) {
