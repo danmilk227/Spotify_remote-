@@ -204,9 +204,10 @@ class IpodifyBleService : Service() {
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.i(TAG, "Connected to GATT server. Requesting MTU 512...")
+                Log.i(TAG, "Connected to GATT server. Requesting MTU 512 & HIGH PRIORITY...")
                 isConnected = true
                 updateNotification("Подключено к iPodify 3G")
+                gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 val mtuOk = gatt?.requestMtu(512) ?: false
                 if (!mtuOk) {
                     gatt?.discoverServices()
@@ -238,6 +239,7 @@ class IpodifyBleService : Service() {
                         descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                         descriptor?.let { gatt.writeDescriptor(it) }
                         Log.i(TAG, "Subscribed to TX notifications!")
+                        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                     }
 
                     // Request initial state from media listener

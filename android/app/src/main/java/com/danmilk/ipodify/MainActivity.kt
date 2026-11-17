@@ -25,6 +25,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPermissions: TextView
     private lateinit var btnGrantPerms: Button
     private lateinit var btnNotifAccess: Button
+    private lateinit var btnSpotifyLogin: Button
     private lateinit var btnToggleService: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,7 +37,14 @@ class MainActivity : AppCompatActivity() {
         tvPermissions = findViewById(R.id.tvPermissions)
         btnGrantPerms = findViewById(R.id.btnGrantPerms)
         btnNotifAccess = findViewById(R.id.btnNotifAccess)
+        btnSpotifyLogin = findViewById(R.id.btnSpotifyLogin)
         btnToggleService = findViewById(R.id.btnToggleService)
+
+        btnSpotifyLogin.setOnClickListener {
+            val authUrl = "https://accounts.spotify.com/authorize?client_id=${SpotifyApiHelper.CLIENT_ID}&response_type=token&redirect_uri=${SpotifyApiHelper.REDIRECT_URI}&scope=playlist-read-private%20playlist-read-collaborative%20user-read-playback-state%20user-modify-playback-state"
+            val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
+            startActivity(browserIntent)
+        }
 
         btnGrantPerms.setOnClickListener {
             checkAndRequestPermissions()
@@ -63,6 +71,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         checkAndRequestPermissions()
+        handleIntent(intent)
         updateUI()
 
         // Auto-start background service if permissions granted
@@ -86,9 +95,27 @@ class MainActivity : AppCompatActivity() {
         instance = null
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme == "ipodify" && data.host == "callback") {
+            val fragment = data.fragment
+            if (fragment != null && fragment.contains("access_token=")) {
+                val token = fragment.substringAfter("access_token=").substringBefore("&")
+                SpotifyApiHelper.saveAccessToken(this, token)
+                updateUI()
+            }
+        }
+    }
+
     fun updateUI() {
         runOnUiThread {
-            tvStatus.text = "Bluetooth: ${IpodifyBleService.currentStatus}\nМедиа: ${MediaListenerService.lastTrackInfo}"
+            val hasToken = SpotifyApiHelper.getAccessToken(this) != null
+            tvStatus.text = "Bluetooth: ${IpodifyBleService.currentStatus}\nМедиа: ${MediaListenerService.lastTrackInfo}\nSpotify API: ${if (hasToken) "✅ Авторизован (плейлисты активны)" else "❌ Не авторизован"}"
 
             val hasNotif = isNotificationServiceEnabled()
             val hasBt = hasBluetoothPermissions()

@@ -154,17 +154,34 @@ class MediaListenerService : NotificationListenerService() {
                 }
                 cmd.startsWith("GET:") -> {
                     val folder = cmd.substringAfter("GET:").substringBefore(":")
-                    val list = when (folder) {
-                        "playlists" -> listOf("Liked Songs", "My Wave", "Heavy Rotation", "Daily Mix 1", "Workout Hits")
-                        "artists" -> listOf("Three Days Grace", "Linkin Park", "Skillet", "Bring Me The Horizon")
-                        "albums" -> listOf("One-X", "Meteora", "Comatose", "Sempiternal")
-                        else -> listOf("Track 1", "Track 2", "Track 3", "Track 4", "Track 5")
+                    if (folder == "playlists") {
+                        SpotifyApiHelper.fetchPlaylists(this) { list ->
+                            val packet = "MN|playlists|0|${list.joinToString("|")}"
+                            IpodifyBleService.instance?.sendPacketToBle(packet)
+                        }
+                    } else {
+                        val list = when (folder) {
+                            "artists" -> listOf("Three Days Grace", "Linkin Park", "Skillet", "Bring Me The Horizon")
+                            "albums" -> listOf("One-X", "Meteora", "Comatose", "Sempiternal")
+                            else -> listOf("Track 1", "Track 2", "Track 3", "Track 4", "Track 5")
+                        }
+                        val packet = "MN|$folder|0|${list.joinToString("|")}"
+                        IpodifyBleService.instance?.sendPacketToBle(packet)
                     }
-                    val packet = "MN|$folder|0|${list.joinToString("|")}"
-                    IpodifyBleService.instance?.sendPacketToBle(packet)
                 }
                 cmd.startsWith("PLAY_ITEM:") -> {
-                    controller.transportControls.play()
+                    val parts = cmd.split(":")
+                    if (parts.size >= 3 && parts[1] == "playlists") {
+                        val idx = parts[2].toIntOrNull() ?: 0
+                        val uri = SpotifyApiHelper.playlistUris.getOrNull(idx)
+                        if (uri != null) {
+                            SpotifyApiHelper.playItem(this, uri)
+                        } else {
+                            controller.transportControls.play()
+                        }
+                    } else {
+                        controller.transportControls.play()
+                    }
                 }
             }
         } catch (e: Exception) {
