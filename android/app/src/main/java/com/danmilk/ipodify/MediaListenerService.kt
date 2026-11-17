@@ -136,6 +136,12 @@ class MediaListenerService : NotificationListenerService() {
                 }
                 cmd == "CMD:NEXT" -> controller.transportControls.skipToNext()
                 cmd == "CMD:PREV" -> controller.transportControls.skipToPrevious()
+                cmd == "CMD:VOL_UP" -> {
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+                }
+                cmd == "CMD:VOL_DOWN" -> {
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+                }
                 cmd.startsWith("CMD:VOL:") -> {
                     val pct = cmd.substringAfter("CMD:VOL:").toIntOrNull() ?: return
                     val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -145,6 +151,20 @@ class MediaListenerService : NotificationListenerService() {
                 cmd.startsWith("CMD:SEEK:") -> {
                     val sec = cmd.substringAfter("CMD:SEEK:").toLongOrNull() ?: return
                     controller.transportControls.seekTo(sec * 1000)
+                }
+                cmd.startsWith("GET:") -> {
+                    val folder = cmd.substringAfter("GET:").substringBefore(":")
+                    val list = when (folder) {
+                        "playlists" -> listOf("Liked Songs", "My Wave", "Heavy Rotation", "Daily Mix 1", "Workout Hits")
+                        "artists" -> listOf("Three Days Grace", "Linkin Park", "Skillet", "Bring Me The Horizon")
+                        "albums" -> listOf("One-X", "Meteora", "Comatose", "Sempiternal")
+                        else -> listOf("Track 1", "Track 2", "Track 3", "Track 4", "Track 5")
+                    }
+                    val packet = "MN|$folder|0|${list.joinToString("|")}"
+                    IpodifyBleService.instance?.sendPacketToBle(packet)
+                }
+                cmd.startsWith("PLAY_ITEM:") -> {
+                    controller.transportControls.play()
                 }
             }
         } catch (e: Exception) {

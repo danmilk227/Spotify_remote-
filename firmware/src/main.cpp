@@ -146,6 +146,7 @@ void sendBleCommand(const String& cmd) {
     if (state.bleConnected && pTxCharacteristic) {
         pTxCharacteristic->setValue(cmd.c_str());
         pTxCharacteristic->notify();
+        delay(12);
     }
 }
 
@@ -231,6 +232,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 
 void initBLE() {
     BLEDevice::init("iPodify 3G");
+    BLEDevice::setMTU(512);
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new ServerCallbacks());
 
@@ -336,13 +338,7 @@ void loadDynamicFolder(const String& folderId, const String& title) {
     pushScreen(SCR_MENU_DYNAMIC, folderId, title);
     dynamicCount = 0;
 
-    if (state.bleConnected) {
-        sendBleCommand("GET:" + folderId + ":0");
-        dynamicItems[dynamicCount++] = "Loading...";
-        return;
-    }
-
-    // Демо-данные для автономного теста без телефона
+    // Сразу заполняем дефолтными списками — экран НИКОГДА не застрянет на "Loading..."
     if (folderId == "playlists") {
         for (auto s : DEMO_PLAYLISTS) dynamicItems[dynamicCount++] = s;
     } else if (folderId == "artists") {
@@ -351,6 +347,10 @@ void loadDynamicFolder(const String& folderId, const String& title) {
         for (auto s : DEMO_ALBUMS) dynamicItems[dynamicCount++] = s;
     } else {
         for (auto s : DEMO_SONGS) dynamicItems[dynamicCount++] = s;
+    }
+
+    if (state.bleConnected) {
+        sendBleCommand("GET:" + folderId + ":0");
     }
 }
 
@@ -395,10 +395,15 @@ void handleNavScroll(int dir) {
             state.scrubTimeoutMs = millis() + 1500;
         } else {
             // dir < 0 (ВВЕРХ) -> Громкость +, dir > 0 (ВНИЗ) -> Громкость -
-            state.volumePct = constrain(state.volumePct - dir * 5, 0, 100);
+            if (dir < 0) {
+                state.volumePct = min(100, state.volumePct + 5);
+                sendBleCommand("CMD:VOL_UP");
+            } else {
+                state.volumePct = max(0, state.volumePct - 5);
+                sendBleCommand("CMD:VOL_DOWN");
+            }
             state.showVolumeOverlay = true;
             state.volumeTimeoutMs = millis() + 1800;
-            sendBleCommand("CMD:VOL:" + String(state.volumePct));
         }
         return;
     }
@@ -653,7 +658,7 @@ void pollButtons() {
                 btns[i].longFired = true;
                 onButtonLongPress(btns[i].pin);
             }
-            if (now - btns[i].pressStartMs > 350 && (now - btns[i].lastRepeatMs > 130)) {
+            if (now - btns[i].pressStartMs > 400 && (now - btns[i].lastRepeatMs > 220)) {
                 btns[i].lastRepeatMs = now;
                 onButtonRepeat(btns[i].pin);
             }
@@ -1028,7 +1033,8 @@ void setup() {
     }
 
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-    Wire.setClock(400000); // Разгон I2C со 100 кГц до 400 кГц (кадр улетает за 5 мс вместо 25 мс)
+    Wire.setTimeOut(50);   // Защита от зависания шины I2C при помехах
+    Wire.setClock(400000); // Разгон I2C со 100 кГц до 400 кГц
     u8g2.begin();
     u8g2.enableUTF8Print();
     u8g2.setContrast(255);

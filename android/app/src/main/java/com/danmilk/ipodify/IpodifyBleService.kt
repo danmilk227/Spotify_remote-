@@ -203,10 +203,13 @@ class IpodifyBleService : Service() {
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.i(TAG, "Connected to GATT server. Discovering services...")
+                Log.i(TAG, "Connected to GATT server. Requesting MTU 512...")
                 isConnected = true
                 updateNotification("Подключено к iPodify 3G")
-                gatt?.discoverServices()
+                val mtuOk = gatt?.requestMtu(512) ?: false
+                if (!mtuOk) {
+                    gatt?.discoverServices()
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.w(TAG, "Disconnected from GATT server. Will auto-reconnect...")
                 isConnected = false
@@ -214,6 +217,11 @@ class IpodifyBleService : Service() {
                 updateNotification("Отключено. Авто-повтор через 3 сек...")
                 handler.postDelayed({ startAutoConnectScan() }, 3000)
             }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            Log.i(TAG, "MTU changed to: $mtu. Discovering services...")
+            gatt?.discoverServices()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
