@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/spotify-ipod-remote-9890505227172059046
   workflow_dispatch:
 
 permissions:
@@ -16,20 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Cache pip
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Cache PlatformIO
-        uses: actions/cache@v3
-        with:
-          path: ~/.platformio
-          key: ${{ runner.os }}-${{ hashFiles('**/lockfiles') }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,11 +33,19 @@ jobs:
       - name: Prepare Web Assets
         run: |
           mkdir -p dist/firmware
-          cp -r web/* dist/
-          # Copy compiled binaries to the dist folder for ESP Web Tools
+          cp -r web/* dist/ || true
           cp firmware/.pio/build/esp32-c3-devkitm-1/bootloader.bin dist/firmware/
           cp firmware/.pio/build/esp32-c3-devkitm-1/partitions.bin dist/firmware/
           cp firmware/.pio/build/esp32-c3-devkitm-1/firmware.bin dist/firmware/
+
+      - name: Upload Binaries Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-firmware-bin
+          path: |
+            firmware/.pio/build/esp32-c3-devkitm-1/bootloader.bin
+            firmware/.pio/build/esp32-c3-devkitm-1/partitions.bin
+            firmware/.pio/build/esp32-c3-devkitm-1/firmware.bin
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
