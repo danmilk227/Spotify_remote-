@@ -1,0 +1,43 @@
+import FreeCAD as App
+import Part
+
+doc = App.ActiveDocument or App.newDocument("Scandic_TV_Blank")
+
+# 1. Габариты вставки (мм)
+L = 56.0          # Общая длина (55 мм)
+W = 44.0          # Ширина между прямыми верхом и низом (44 мм)
+H = 13.5          # Высота вставки
+wall = 1.2        # Толщина стенок и верхней панели
+
+# Параметры формы:
+R_side = 58.0     # Радиус пологой дуги левого и правого бока
+R_corner = 8.5    # Скругление четырёх углов
+
+def make_scandic_tv(length, width, height, r_side, r_corner):
+    # Верх и низ — строго прямые
+    rect = Part.makeBox(length, width, height, App.Vector(-length/2.0, -width/2.0, 0))
+    
+    # Левый и правый бока — пологие дуги
+    c_right = Part.makeCylinder(r_side, height, App.Vector(length/2.0 - r_side, 0, 0))
+    c_left  = Part.makeCylinder(r_side, height, App.Vector(-length/2.0 + r_side, 0, 0))
+    
+    body = rect.common(c_right).common(c_left)
+    
+    # Скругляем 4 вертикальных ребра
+    vert_edges = [e for e in body.Edges if abs(e.Vertexes[0].Z - e.Vertexes[1].Z) > height * 0.8]
+    if vert_edges:
+        body = body.makeFillet(r_corner, vert_edges)
+    return body
+
+# Строим внешнюю оболочку и вырезаем внутреннюю полость
+outer = make_scandic_tv(L, W, H, R_side, R_corner)
+inner = make_scandic_tv(L - wall*2, W - wall*2, H - wall, R_side - wall, max(1.0, R_corner - wall))
+shell = outer.cut(inner)
+
+obj = doc.addObject("Part::Feature", "Scandic_Insert")
+obj.Shape = shell.removeSplitter()
+doc.recompute()
+
+if App.GuiUp:
+    import FreeCADGui as Gui
+    Gui.SendMsgToActiveView("ViewFit")
