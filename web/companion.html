@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>iPodify Companion — Spotify BLE Bridge</title>
+    <meta name="theme-color" content="#121212">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎵</text></svg>">
+    <style>
+        :root {
+            --bg-color: #0e0e10;
+            --card-bg: #18181b;
+            --card-border: #27272a;
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --spotify-green: #1db954;
+            --spotify-green-hover: #1ed760;
+            --accent-blue: #3b82f6;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 480px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        header {
+            text-align: center;
+            padding: 8px 0;
+        }
+
+        header h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        header h1 span {
+            color: var(--spotify-green);
+        }
+
+        header p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 14px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+        }
+
+        .badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 4px 8px;
+            border-radius: 9999px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .badge-disconnected {
+            background: #27272a;
+            color: #71717a;
+        }
+
+        .badge-connected {
+            background: rgba(29, 185, 84, 0.2);
+            color: var(--spotify-green);
+            border: 1px solid rgba(29, 185, 84, 0.4);
+        }
+
+        .badge-pulse {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--spotify-green);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.8; }
+            50% { transform: scale(1.3); opacity: 1; }
+            100% { transform: scale(0.9); opacity: 0.8; }
+        }
+
+        .btn {
+            border: none;
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-spotify {
+            background-color: var(--spotify-green);
+            color: #000;
+        }
+
+        .btn-spotify:hover:not(:disabled) {
+            background-color: var(--spotify-green-hover);
+        }
+
+        .btn-ble {
+            background-color: #2563eb;
+            color: #fff;
+        }
+
+        .btn-ble:hover:not(:disabled) {
+            background-color: #1d4ed8;
+        }
+
+        .btn-secondary {
+            background-color: #27272a;
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background-color: #3f3f46;
+        }
+
+        .btn-danger {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: var(--danger);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .now-playing-box {
+            display: flex;
+            gap: 14px;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 12px;
+            border-radius: 10px;
+        }
+
+        .album-art {
+            width: 64px;
+            height: 64px;
+            border-radius: 8px;
+            object-fit: cover;
+            background-color: #27272a;
+            flex-shrink: 0;
+        }
+
+        .track-details {
+            flex-grow: 1;
+            min-width: 0;
+        }
+
+        .track-title {
+            font-size: 1rem;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .track-artist {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-top: 2px;
+        }
+
+        .progress-bar-container {
+            width: 100%;
+            height: 4px;
+            background: #27272a;
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: var(--spotify-green);
+            width: 0%;
+            transition: width 0.3s linear;
+        }
+
+        .playback-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 16px;
+            margin-top: 4px;
+        }
+
+        .btn-icon {
+            background: none;
+            border: none;
+            color: var(--text-primary);
+            font-size: 1.4rem;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn-icon:hover {
+            background: #27272a;
+        }
+
+        .config-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .config-row label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .config-row input {
+            background: #27272a;
+            border: 1px solid #3f3f46;
+            color: #fff;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+
+        .console-box {
+            background: #09090b;
+            border: 1px solid #27272a;
+            border-radius: 8px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: #71717a;
+            height: 120px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-tx { color: #60a5fa; }
+        .log-rx { color: #34d399; }
+        .log-err { color: #f87171; }
+
+        .tips {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .tips strong {
+            color: var(--text-primary);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>iPodify <span>Companion</span></h1>
+            <p>Мост между Spotify и пультом iPod Classic на ESP32-C3</p>
+        </header>
+
+        <!-- BLE CONNECTION CARD -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Bluetooth (BLE)</span>
+                <span id="bleStatusBadge" class="badge badge-disconnected">Не подключено</span>
+            </div>
+
+            <button id="btnBleConnect" class="btn btn-ble">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg>
+                Подключить iPodify 3G
+            </button>
+            <button id="btnBleDisconnect" class="btn btn-danger" style="display: none;">
+                Отключить BLE
+            </button>
+        </div>
+
+        <!-- SPOTIFY AUTH CARD -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Spotify Аккаунт</span>
+                <span id="spotifyStatusBadge" class="badge badge-disconnected">Не авторизован</span>
+            </div>
+
+            <div id="spotifyLoggedOut">
+                <p class="tips" style="margin-bottom: 8px;">
+                    Для передачи названия треков и управления плеером подключи свой аккаунт Spotify.
+                </p>
+                <div class="config-row" style="margin-bottom: 10px;">
+                    <label>Spotify Client ID (можно оставить по умолчанию или указать свой из Spotify Developer Dashboard):</label>
+                    <input type="text" id="spotifyClientIdInput" placeholder="Введи Client ID..." value="b533d5965a954a7f9652a926fa97c5ae">
+                </div>
+                <button id="btnSpotifyLogin" class="btn btn-spotify">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                    Войти через Spotify
+                </button>
+            </div>
+
+            <div id="spotifyLoggedIn" style="display: none;">
+                <div class="now-playing-box">
+                    <img id="albumArt" class="album-art" src="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22 fill=%22%23333%22><rect width=%2264%22 height=%2264%22/><text x=%2232%22 y=%2238%22 font-size=%2224%22 text-anchor=%22middle%22 fill=%22%23666%22>🎵</text></svg>" alt="Cover">
+                    <div class="track-details">
+                        <div id="trackTitle" class="track-title">Трек не воспроизводится</div>
+                        <div id="trackArtist" class="track-artist">Открой Spotify на телефоне</div>
+                        <div class="progress-bar-container">
+                            <div id="trackProgress" class="progress-bar"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="playback-controls">
+                    <button id="btnPrev" class="btn-icon">⏮</button>
+                    <button id="btnPlayPause" class="btn-icon">⏯</button>
+                    <button id="btnNext" class="btn-icon">⏭</button>
+                    <button id="btnLike" class="btn-icon">💚</button>
+                </div>
+
+                <button id="btnSpotifyLogout" class="btn btn-secondary" style="font-size: 0.85rem; padding: 8px;">
+                    Выйти из Spotify
+                </button>
+            </div>
+        </div>
+
+        <!-- SIMULATION / DEMO CARD (IF SPOTIFY IS NOT LOGGED IN) -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Тестовый режим (Демо)</span>
+            </div>
+            <p class="tips">
+                Можно отправить тестовые треки на ESP32 даже без входа в Spotify для проверки кнопок и экрана:
+            </p>
+            <div style="display: flex; gap: 8px;">
+                <button id="btnSendDemo" class="btn btn-secondary" style="flex: 1;">Отправить Demo трек</button>
+                <button id="btnSendPlaylists" class="btn btn-secondary" style="flex: 1;">Синхронизировать плейлисты</button>
+            </div>
+        </div>
+
+        <!-- CONSOLE / BLE LOG -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Лог обмена BLE</span>
+                <span id="logCounter" style="font-size: 0.75rem; color: #71717a;">0 пакетов</span>
+            </div>
+            <div id="consoleLog" class="console-box">Ожидание подключения...</div>
+        </div>
+    </div>
+
+    <script>
+        // Nordic UART Service UUIDs
+        const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+        const RX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // Телефон -> ESP32
+        const TX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // ESP32 -> Телефон
+
+        let bleDevice = null;
+        let rxChar = null;
+        let txChar = null;
+        let isBleConnected = false;
+        let pollTimer = null;
+        let packetCount = 0;
+
+        // Spotify state
+        let spotifyToken = localStorage.getItem('spotify_access_token');
+        let currentPlayback = {
+            isPlaying: false,
+            isLiked: false,
+            shuffle: false,
+            repeat: 0,
+            pos: 0,
+            dur: 1,
+            vol: 50,
+            title: "No playback",
+            artist: "None",
+            album: "None",
+            id: null
+        };
+
+        // DOM elements
+        const bleBadge = document.getElementById('bleStatusBadge');
+        const btnBleConnect = document.getElementById('btnBleConnect');
+        const btnBleDisconnect = document.getElementById('btnBleDisconnect');
+        const spotifyBadge = document.getElementById('spotifyStatusBadge');
+        const spotifyLoggedOut = document.getElementById('spotifyLoggedOut');
+        const spotifyLoggedIn = document.getElementById('spotifyLoggedIn');
+        const btnSpotifyLogin = document.getElementById('btnSpotifyLogin');
+        const btnSpotifyLogout = document.getElementById('btnSpotifyLogout');
+        const clientIdInput = document.getElementById('spotifyClientIdInput');
+        const trackTitleEl = document.getElementById('trackTitle');
+        const trackArtistEl = document.getElementById('trackArtist');
+        const trackProgressEl = document.getElementById('trackProgress');
+        const albumArtEl = document.getElementById('albumArt');
+        const consoleLog = document.getElementById('consoleLog');
+        const logCounter = document.getElementById('logCounter');
+
+        function log(msg, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            if (type === 'tx') div.className = 'log-tx';
+            else if (type === 'rx') div.className = 'log-rx';
+            else if (type === 'err') div.className = 'log-err';
+            div.textContent = `[${time}] ${msg}`;
+            consoleLog.appendChild(div);
+            consoleLog.scrollTop = consoleLog.scrollHeight;
+            packetCount++;
+            logCounter.textContent = `${packetCount} соб.`;
+        }
+
+        // ====================== BLUETOOTH (WEB BLE) =========================
+        btnBleConnect.addEventListener('click', async () => {
+            if (!navigator.bluetooth) {
+                alert("Ваш браузер не поддерживает Web Bluetooth! Используйте Google Chrome на Android.");
+                return;
+            }
+
+            try {
+                log("Поиск устройства 'iPodify 3G'...", 'info');
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [
+                        { name: "iPodify 3G" },
+                        { services: [SERVICE_UUID] }
+                    ],
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                bleDevice.addEventListener('gattserverdisconnected', onBleDisconnected);
+
+                log("Подключение к GATT серверу...", 'info');
+                const server = await bleDevice.gatt.connect();
+
+                log("Получение сервиса Nordic UART...", 'info');
+                const service = await server.getPrimaryService(SERVICE_UUID);
+
+                rxChar = await service.getCharacteristic(RX_UUID);
+                txChar = await service.getCharacteristic(TX_UUID);
+
+                await txChar.startNotifications();
+                txChar.addEventListener('characteristicvaluechanged', onTxNotification);
+
+                setBleConnected(true);
+                log("Bluetooth успешно подключен!", 'rx');
+
+                // Начать отправку данных
+                startSyncLoop();
+            } catch (err) {
+                log("Ошибка подключения BLE: " + err.message, 'err');
+                setBleConnected(false);
+            }
+        });
+
+        btnBleDisconnect.addEventListener('click', () => {
+            if (bleDevice && bleDevice.gatt.connected) {
+                bleDevice.gatt.disconnect();
+            }
+        });
+
+        function onBleDisconnected() {
+            log("BLE соединение разорвано", 'err');
+            setBleConnected(false);
+            if (pollTimer) clearInterval(pollTimer);
+        }
+
+        function setBleConnected(connected) {
+            isBleConnected = connected;
+            if (connected) {
+                bleBadge.className = 'badge badge-connected';
+                bleBadge.innerHTML = '<span class="badge-pulse"></span>Подключено';
+                btnBleConnect.style.display = 'none';
+                btnBleDisconnect.style.display = 'block';
+            } else {
+                bleBadge.className = 'badge badge-disconnected';
+                bleBadge.textContent = 'Не подключено';
+                btnBleConnect.style.display = 'block';
+                btnBleDisconnect.style.display = 'none';
+            }
+        }
+
+        // Прием команд от ESP32
+        function onTxNotification(event) {
+            const val = new TextDecoder().decode(event.target.value);
+            log(`RX от ESP32: ${val}`, 'rx');
+            handleEspCommand(val.trim());
+        }
+
+        // Отправка пакета в ESP32
+        async function sendToEsp(packet) {
+            if (!rxChar || !isBleConnected) return;
+            try {
+                const data = new TextEncoder().encode(packet);
+                await rxChar.writeValueWithoutResponse(data);
+                log(`TX в ESP32: ${packet}`, 'tx');
+            } catch (err) {
+                log(`Ошибка отправки: ${err.message}`, 'err');
+            }
+        }
+
+        // Формирование пакета Now Playing:
+        // NP|play|like|shuf|rep|qIdx|qTot|pos|dur|vol|title|artist|album
+        function sendNowPlayingPacket() {
+            const p = currentPlayback;
+            const play = p.isPlaying ? 1 : 0;
+            const like = p.isLiked ? 1 : 0;
+            const shuf = p.shuffle ? 1 : 0;
+            const rep = p.repeat;
+            const pos = Math.round(p.pos);
+            const dur = Math.round(p.dur);
+            const vol = p.vol;
+            const packet = `NP|${play}|${like}|${shuf}|${rep}|1|10|${pos}|${dur}|${vol}|${cleanStr(p.title)}|${cleanStr(p.artist)}|${cleanStr(p.album)}`;
+            sendToEsp(packet);
+        }
+
+        function cleanStr(s) {
+            if (!s) return "";
+            return s.replace(/\|/g, "/");
+        }
+
+        // ====================== SPOTIFY API =================================
+        const SPOTIFY_SCOPES = [
+            'user-read-playback-state',
+            'user-modify-playback-state',
+            'user-read-currently-playing',
+            'playlist-read-private',
+            'playlist-read-collaborative',
+            'user-library-read',
+            'user-library-modify',
+            'user-top-read',
+            'user-read-recently-played'
+        ].join(' ');
+
+        // PKCE Helpers
+        function generateRandomString(length) {
+            let text = '';
+            const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+            for (let i = 0; i < length; i++) {
+                text += possible.charAt(Math.floor(Math.random() * possible.length));
+            }
+            return text;
+        }
+
+        async function generateCodeChallenge(codeVerifier) {
+            const digest = await crypto.subtle.digest(
+                'SHA-256',
+                new TextEncoder().encode(codeVerifier)
+            );
+            return btoa(String.fromCharCode(...new Uint8Array(digest)))
+                .replace(/=/g, '')
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_');
+        }
+
+        btnSpotifyLogin.addEventListener('click', async () => {
+            const clientId = clientIdInput.value.trim();
+            if (!clientId) {
+                alert("Пожалуйста, укажи Spotify Client ID");
+                return;
+            }
+            localStorage.setItem('spotify_client_id', clientId);
+
+            const codeVerifier = generateRandomString(64);
+            const codeChallenge = await generateCodeChallenge(codeVerifier);
+            localStorage.setItem('spotify_code_verifier', codeVerifier);
+
+            const redirectUri = window.location.origin + window.location.pathname;
+            const authUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${encodeURIComponent(clientId)}&scope=${encodeURIComponent(SPOTIFY_SCOPES)}&code_challenge_method=S256&code_challenge=${codeChallenge}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+            window.location.href = authUrl;
+        });
+
+        // Проверка возврата с OAuth (code)
+        async function checkOAuthCallback() {
+            const params = new URLSearchParams(window.location.search);
+            const code = params.get('code');
+            if (code) {
+                window.history.replaceState({}, document.title, window.location.pathname);
+                const codeVerifier = localStorage.getItem('spotify_code_verifier');
+                const clientId = localStorage.getItem('spotify_client_id');
+                const redirectUri = window.location.origin + window.location.pathname;
+
+                try {
+                    log("Обмен кода на токен Spotify...", 'info');
+                    const body = new URLSearchParams({
+                        client_id: clientId,
+                        grant_type: 'authorization_code',
+                        code: code,
+                        redirect_uri: redirectUri,
+                        code_verifier: codeVerifier
+                    });
+
+                    const resp = await fetch('https://accounts.spotify.com/api/token', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body.toString()
+                    });
+
+                    const data = await resp.json();
+                    if (data.access_token) {
+                        spotifyToken = data.access_token;
+                        localStorage.setItem('spotify_access_token', spotifyToken);
+                        if (data.refresh_token) {
+                            localStorage.setItem('spotify_refresh_token', data.refresh_token);
+                        }
+                        log("Авторизация в Spotify успешна!", 'rx');
+                        initSpotifyUI();
+                    } else {
+                        log("Ошибка токена: " + JSON.stringify(data), 'err');
+                    }
+                } catch (e) {
+                    log("Ошибка OAuth: " + e.message, 'err');
+                }
+            } else if (spotifyToken) {
+                initSpotifyUI();
+            }
+        }
+
+        function initSpotifyUI() {
+            spotifyBadge.className = 'badge badge-connected';
+            spotifyBadge.textContent = 'Подключен';
+            spotifyLoggedOut.style.display = 'none';
+            spotifyLoggedIn.style.display = 'block';
+            fetchCurrentlyPlaying();
+        }
+
+        btnSpotifyLogout.addEventListener('click', () => {
+            spotifyToken = null;
+            localStorage.removeItem('spotify_access_token');
+            localStorage.removeItem('spotify_refresh_token');
+            spotifyBadge.className = 'badge badge-disconnected';
+            spotifyBadge.textContent = 'Не авторизован';
+            spotifyLoggedOut.style.display = 'block';
+            spotifyLoggedIn.style.display = 'none';
+        });
+
+        async function spotifyRequest(endpoint, method = 'GET', body = null) {
+            if (!spotifyToken) return null;
+            try {
+                const opts = {
+                    method: method,
+                    headers: {
+                        'Authorization': `Bearer ${spotifyToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                };
+                if (body) opts.body = JSON.stringify(body);
+                const resp = await fetch(`https://api.spotify.com/v1${endpoint}`, opts);
+                if (resp.status === 204) return true;
+                if (resp.status === 401) {
+                    log("Токен Spotify истек", 'err');
+                    return null;
+                }
+                return await resp.json();
+            } catch (e) {
+                return null;
+            }
+        }
+
+        async function fetchCurrentlyPlaying() {
+            if (!spotifyToken) return;
+            const data = await spotifyRequest('/me/player');
+            if (data && data.item) {
+                const item = data.item;
+                currentPlayback.isPlaying = data.is_playing;
+                currentPlayback.pos = data.progress_ms / 1000;
+                currentPlayback.dur = item.duration_ms / 1000;
+                currentPlayback.vol = data.device ? data.device.volume_percent : 50;
+                currentPlayback.shuffle = data.shuffle_state;
+                currentPlayback.repeat = data.repeat_state === 'off' ? 0 : (data.repeat_state === 'context' ? 1 : 2);
+                currentPlayback.title = item.name;
+                currentPlayback.artist = item.artists.map(a => a.name).join(', ');
+                currentPlayback.album = item.album.name;
+                currentPlayback.id = item.id;
+
+                // UI update
+                trackTitleEl.textContent = currentPlayback.title;
+                trackArtistEl.textContent = currentPlayback.artist;
+                const pct = (currentPlayback.pos / Math.max(1, currentPlayback.dur)) * 100;
+                trackProgressEl.style.width = `${pct}%`;
+                if (item.album.images && item.album.images.length > 0) {
+                    albumArtEl.src = item.album.images[0].url;
+                }
+
+                if (isBleConnected) {
+                    sendNowPlayingPacket();
+                }
+            }
+        }
+
+        function startSyncLoop() {
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(() => {
+                if (spotifyToken) {
+                    fetchCurrentlyPlaying();
+                } else if (isBleConnected) {
+                    sendNowPlayingPacket();
+                }
+            }, 1000);
+        }
+
+        // ====================== ОБРАБОТКА КОМАНД С ПУЛЬТА ===================
+        async function handleEspCommand(cmd) {
+            if (cmd === 'CMD:PLAY_PAUSE') {
+                if (currentPlayback.isPlaying) {
+                    await spotifyRequest('/me/player/pause', 'PUT');
+                    currentPlayback.isPlaying = false;
+                } else {
+                    await spotifyRequest('/me/player/play', 'PUT');
+                    currentPlayback.isPlaying = true;
+                }
+                sendNowPlayingPacket();
+            } else if (cmd === 'CMD:NEXT') {
+                await spotifyRequest('/me/player/next', 'POST');
+                setTimeout(fetchCurrentlyPlaying, 400);
+            } else if (cmd === 'CMD:PREV') {
+                await spotifyRequest('/me/player/previous', 'POST');
+                setTimeout(fetchCurrentlyPlaying, 400);
+            } else if (cmd.startsWith('CMD:VOL:')) {
+                const v = parseInt(cmd.split(':')[2]);
+                currentPlayback.vol = v;
+                await spotifyRequest(`/me/player/volume?volume_percent=${v}`, 'PUT');
+            } else if (cmd.startsWith('CMD:SEEK:')) {
+                const s = parseInt(cmd.split(':')[2]);
+                currentPlayback.pos = s;
+                await spotifyRequest(`/me/player/seek?position_ms=${s * 1000}`, 'PUT');
+            } else if (cmd === 'CMD:LIKE') {
+                if (currentPlayback.id) {
+                    if (currentPlayback.isLiked) {
+                        await spotifyRequest(`/me/tracks?ids=${currentPlayback.id}`, 'DELETE');
+                        currentPlayback.isLiked = false;
+                    } else {
+                        await spotifyRequest(`/me/tracks?ids=${currentPlayback.id}`, 'PUT');
+                        currentPlayback.isLiked = true;
+                    }
+                    sendNowPlayingPacket();
+                }
+            } else if (cmd.startsWith('GET:playlists:')) {
+                const pl = await spotifyRequest('/me/playlists?limit=20');
+                if (pl && pl.items) {
+                    const names = pl.items.map(p => cleanStr(p.name)).join('|');
+                    sendToEsp(`MN|playlists|0|${names}`);
+                }
+            }
+        }
+
+        // Кнопки управления плеером на веб-странице
+        document.getElementById('btnPlayPause').addEventListener('click', () => handleEspCommand('CMD:PLAY_PAUSE'));
+        document.getElementById('btnNext').addEventListener('click', () => handleEspCommand('CMD:NEXT'));
+        document.getElementById('btnPrev').addEventListener('click', () => handleEspCommand('CMD:PREV'));
+        document.getElementById('btnLike').addEventListener('click', () => handleEspCommand('CMD:LIKE'));
+
+        // Демо кнопки
+        document.getElementById('btnSendDemo').addEventListener('click', () => {
+            currentPlayback = {
+                isPlaying: true,
+                isLiked: true,
+                shuffle: false,
+                repeat: 0,
+                pos: 42,
+                dur: 198,
+                vol: 70,
+                title: "Animal I Have Become",
+                artist: "Three Days Grace",
+                album: "One-X",
+                id: null
+            };
+            trackTitleEl.textContent = currentPlayback.title;
+            trackArtistEl.textContent = currentPlayback.artist;
+            trackProgressEl.style.width = "21%";
+            sendNowPlayingPacket();
+            log("Отправлен тестовый трек в ESP32", 'tx');
+        });
+
+        document.getElementById('btnSendPlaylists').addEventListener('click', () => {
+            const items = ["My Wave", "Cyberpunk OST", "Heavy Rock", "Lofi Beats", "Synthwave 80s"];
+            sendToEsp(`MN|playlists|0|${items.join('|')}`);
+            log("Отправлен тестовый список плейлистов", 'tx');
+        });
+
+        // Запуск
+        checkOAuthCallback();
+    </script>
+</body>
+</html>
