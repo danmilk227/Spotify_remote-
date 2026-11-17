@@ -23,7 +23,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
+import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.util.UUID
@@ -125,7 +125,10 @@ class IpodifyBleService : Service() {
         updateNotification("Поиск устройства iPodify...")
         Log.i(TAG, "Starting BLE scan for iPodify...")
 
-        val filter = ScanFilter.Builder()
+        val filterByUuid = ScanFilter.Builder()
+            .setServiceUuid(ParcelUuid(SERVICE_UUID))
+            .build()
+        val filterByName = ScanFilter.Builder()
             .setDeviceName("iPodify 3G")
             .build()
 
@@ -133,7 +136,18 @@ class IpodifyBleService : Service() {
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
-        scanner.startScan(listOf(filter), settings, scanCallback)
+        try {
+            // Сканируем с фильтрами, а если устройство найдено — коннектимся
+            scanner.startScan(listOf(filterByUuid, filterByName), settings, scanCallback)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting scan: ${e.message}")
+            // Fallback без фильтров
+            try {
+                scanner.startScan(scanCallback)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Fallback scan failed: ${e2.message}")
+            }
+        }
     }
 
     private fun stopScan() {
@@ -150,9 +164,14 @@ class IpodifyBleService : Service() {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             val device = result?.device ?: return
-            Log.i(TAG, "Found device: ${device.name} (${device.address})")
-            stopScan()
-            connectToDevice(device)
+            val name = device.name ?: result.scanRecord?.deviceName
+            val hasUuid = result.scanRecord?.serviceUuids?.contains(ParcelUuid(SERVICE_UUID)) == true
+
+            if (name == "iPodify 3G" || (name != null && name.contains("iPodify")) || hasUuid) {
+                Log.i(TAG, "Found target device: $name (${device.address})")
+                stopScan()
+                connectToDevice(device)
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {

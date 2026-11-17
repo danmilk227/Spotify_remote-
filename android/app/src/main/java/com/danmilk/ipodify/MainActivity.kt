@@ -88,7 +88,7 @@ class MainActivity : AppCompatActivity() {
 
     fun updateUI() {
         runOnUiThread {
-            tvStatus.text = "Статус: ${IpodifyBleService.currentStatus}"
+            tvStatus.text = "Bluetooth: ${IpodifyBleService.currentStatus}\nМедиа: ${MediaListenerService.lastTrackInfo}"
 
             val hasNotif = isNotificationServiceEnabled()
             val hasBt = hasBluetoothPermissions()

@@ -12,11 +12,14 @@ import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.util.Log
 
+import android.service.notification.StatusBarNotification
+
 class MediaListenerService : NotificationListenerService() {
 
     companion object {
         private const val TAG = "iPodifyMedia"
         var instance: MediaListenerService? = null
+        var lastTrackInfo: String = "Ожидание трека..."
     }
 
     private var activeController: MediaController? = null
@@ -25,6 +28,9 @@ class MediaListenerService : NotificationListenerService() {
 
     private val pollRunnable = object : Runnable {
         override fun run() {
+            if (activeController == null) {
+                updateActiveController()
+            }
             broadcastCurrentPlayback()
             handler.postDelayed(this, 1000)
         }
@@ -48,10 +54,17 @@ class MediaListenerService : NotificationListenerService() {
         handler.post(pollRunnable)
     }
 
-    override fun onListenerDisconnected() {
-        super.onListenerDisconnected()
-        instance = null
-        handler.removeCallbacks(pollRunnable)
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        if (sbn?.packageName?.contains("spotify") == true) {
+            updateActiveController()
+            broadcastCurrentPlayback()
+        }
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        if (sbn?.packageName?.contains("spotify") == true) {
+            updateActiveController()
+        }
     }
 
     fun updateActiveController() {
@@ -88,7 +101,14 @@ class MediaListenerService : NotificationListenerService() {
         val durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
         val positionMs = pbState?.position ?: 0L
 
-        if (title.isEmpty()) return
+        if (title.isEmpty()) {
+            lastTrackInfo = "Плеер пауза / нет названия"
+            MainActivity.instance?.updateUI()
+            return
+        }
+
+        lastTrackInfo = "$title — $artist"
+        MainActivity.instance?.updateUI()
 
         val posSec = (positionMs / 1000).toInt()
         val durSec = (durationMs / 1000).toInt().coerceAtLeast(1)
