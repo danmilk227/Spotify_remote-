@@ -23,8 +23,8 @@
 // 6 тактовых кнопок (второй контакт каждой кнопки на GND):
 #define PIN_BTN_LEFT     0   // Лево  (PREV / Назад)
 #define PIN_BTN_RIGHT    1   // Право (NEXT / Вперед)
-#define PIN_BTN_UP       2   // Вверх (Прокрутка вверх / Громкость +)
-#define PIN_BTN_DOWN     4   // Вниз  (Прокрутка вниз / Громкость -)
+#define PIN_BTN_UP       4   // Вверх (Прокрутка вверх / Громкость +)
+#define PIN_BTN_DOWN     2   // Вниз  (Прокрутка вниз / Громкость -)
 #define PIN_BTN_CENTER   3   // Центр (OK / Выбор / Play-Pause)
 #define PIN_BTN_MENU     7   // Меню  (Назад / Выход)
 
