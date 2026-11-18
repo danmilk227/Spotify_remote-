@@ -55,6 +55,9 @@ enum ScreenId {
     SCR_OTA
 };
 
+void pushScreen(ScreenId nextScr, const String& folderId = "", const String& title = "");
+void popScreen();
+
 struct MenuStackEntry {
     ScreenId screen;
     String folderId;
@@ -765,11 +768,6 @@ void pollButtons() {
         } else if (lvl == HIGH && btns[i].lastLevel == LOW) {
             if (now - btns[i].pressStartMs > 25 && !btns[i].longFired && !btns[i].repeatFired) {
                 onButtonShortPress(btns[i].pin);
-            }
-        }
-        btns[i].lastLevel = lvl;
-    }
-}
             }
         }
         btns[i].lastLevel = lvl;
