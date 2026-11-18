@@ -26,12 +26,29 @@ class MediaListenerService : NotificationListenerService() {
     private val handler = Handler(Looper.getMainLooper())
     private val audioManager by lazy { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
+    private var lastPacketSentMs = 0L
+    private var lastSentTitle = ""
+    private var lastSentPosSec = -1
+
     private val pollRunnable = object : Runnable {
         override fun run() {
             if (activeController == null) {
                 updateActiveController()
             }
-            broadcastCurrentPlayback()
+
+            // Если есть токен Spotify, периодически опрашиваем Web API
+            if (SpotifyApiHelper.hasValidToken(this@MediaListenerService)) {
+                SpotifyApiHelper.getCurrentPlayback(this@MediaListenerService) { info ->
+                    if (info != null) {
+                        sendSpotifyApiPlayback(info)
+                    } else {
+                        broadcastCurrentPlayback()
+                    }
+                }
+            } else {
+                broadcastCurrentPlayback()
+            }
+
             handler.postDelayed(this, 1000)
         }
     }
@@ -73,7 +90,6 @@ class MediaListenerService : NotificationListenerService() {
             val component = ComponentName(this, MediaListenerService::class.java)
             val controllers = sessionManager.getActiveSessions(component)
 
-            // Prefer Spotify, or first active controller
             val spotify = controllers.firstOrNull { it.packageName.contains("spotify") }
             val chosen = spotify ?: controllers.firstOrNull()
 
@@ -87,6 +103,30 @@ class MediaListenerService : NotificationListenerService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error updating media controller: ${e.message}")
         }
+    }
+
+    private fun sendSpotifyApiPlayback(info: SpotifyApiHelper.PlaybackStateInfo) {
+        lastTrackInfo = "${info.title} — ${info.artist}"
+        MainActivity.instance?.updateUI()
+
+        val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val volPct = (curVol * 100) / maxVol
+
+        val now = System.currentTimeMillis()
+        if (info.title == lastSentTitle && info.posSec == lastSentPosSec && (now - lastPacketSentMs < 800)) {
+            return
+        }
+
+        lastPacketSentMs = now
+        lastSentTitle = info.title
+        lastSentPosSec = info.posSec
+
+        val shuf = if (info.isShuffled) 1 else 0
+        val isPlay = if (info.isPlaying) 1 else 0
+        // NP|play|like|shuf|rep|qIdx|qTot|pos|dur|vol|title|artist|album
+        val packet = "NP|$isPlay|1|$shuf|${info.repeatState}|1|10|${info.posSec}|${info.durSec}|$volPct|${clean(info.title)}|${clean(info.artist)}|${clean(info.album)}"
+        IpodifyBleService.instance?.sendPacketToBle(packet)
     }
 
     fun broadcastCurrentPlayback() {
@@ -117,70 +157,84 @@ class MediaListenerService : NotificationListenerService() {
         val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         val volPct = (curVol * 100) / maxVol
 
+        val now = System.currentTimeMillis()
+        if (title == lastSentTitle && posSec == lastSentPosSec && (now - lastPacketSentMs < 800)) {
+            return
+        }
+        if (now - lastPacketSentMs < 250) {
+            return
+        }
+
+        lastPacketSentMs = now
+        lastSentTitle = title
+        lastSentPosSec = posSec
+
         // NP|play|like|shuf|rep|qIdx|qTot|pos|dur|vol|title|artist|album
         val packet = "NP|${if (isPlaying) 1 else 0}|1|0|0|1|10|$posSec|$durSec|$volPct|${clean(title)}|${clean(artist)}|${clean(album)}"
         IpodifyBleService.instance?.sendPacketToBle(packet)
     }
 
     fun handleCommand(cmd: String) {
-        val controller = activeController ?: return
+        val hasSpotifyToken = SpotifyApiHelper.hasValidToken(this)
+        val controller = activeController
+
         try {
             when {
                 cmd == "CMD:PLAY_PAUSE" -> {
-                    val isPlaying = controller.playbackState?.state == PlaybackState.STATE_PLAYING
-                    if (isPlaying) {
-                        controller.transportControls.pause()
-                    } else {
-                        controller.transportControls.play()
+                    if (hasSpotifyToken) {
+                        val isPlaying = controller?.playbackState?.state == PlaybackState.STATE_PLAYING
+                        if (isPlaying) SpotifyApiHelper.pause(this) else SpotifyApiHelper.play(this)
+                    }
+                    if (controller != null) {
+                        val isPlaying = controller.playbackState?.state == PlaybackState.STATE_PLAYING
+                        if (isPlaying) controller.transportControls.pause() else controller.transportControls.play()
                     }
                 }
-                cmd == "CMD:NEXT" -> controller.transportControls.skipToNext()
-                cmd == "CMD:PREV" -> controller.transportControls.skipToPrevious()
+                cmd == "CMD:NEXT" -> {
+                    if (hasSpotifyToken) SpotifyApiHelper.next(this)
+                    controller?.transportControls?.skipToNext()
+                }
+                cmd == "CMD:PREV" -> {
+                    if (hasSpotifyToken) SpotifyApiHelper.previous(this)
+                    controller?.transportControls?.skipToPrevious()
+                }
                 cmd == "CMD:VOL_UP" -> {
-                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+                    // Флаг 0 вместо FLAG_SHOW_UI устраняет лавину системных UI-событий
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
                 }
                 cmd == "CMD:VOL_DOWN" -> {
-                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
                 }
                 cmd.startsWith("CMD:VOL:") -> {
                     val pct = cmd.substringAfter("CMD:VOL:").toIntOrNull() ?: return
                     val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                     val targetVol = (pct * maxVol) / 100
-                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, AudioManager.FLAG_SHOW_UI)
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
+                    if (hasSpotifyToken) SpotifyApiHelper.setVolume(this, pct)
                 }
                 cmd.startsWith("CMD:SEEK:") -> {
                     val sec = cmd.substringAfter("CMD:SEEK:").toLongOrNull() ?: return
-                    controller.transportControls.seekTo(sec * 1000)
+                    if (hasSpotifyToken) SpotifyApiHelper.seek(this, sec.toInt())
+                    controller?.transportControls?.seekTo(sec * 1000)
+                }
+                cmd == "CMD:SHUFFLE_ALL" -> {
+                    if (hasSpotifyToken) SpotifyApiHelper.shuffle(this, true)
                 }
                 cmd.startsWith("GET:") -> {
                     val folder = cmd.substringAfter("GET:").substringBefore(":")
-                    if (folder == "playlists") {
-                        SpotifyApiHelper.fetchPlaylists(this) { list ->
-                            val packet = "MN|playlists|0|${list.joinToString("|")}"
-                            IpodifyBleService.instance?.sendPacketToBle(packet)
-                        }
-                    } else {
-                        val list = when (folder) {
-                            "artists" -> listOf("Three Days Grace", "Linkin Park", "Skillet", "Bring Me The Horizon")
-                            "albums" -> listOf("One-X", "Meteora", "Comatose", "Sempiternal")
-                            else -> listOf("Track 1", "Track 2", "Track 3", "Track 4", "Track 5")
-                        }
+                    SpotifyApiHelper.fetchFolderItems(this, folder) { list ->
                         val packet = "MN|$folder|0|${list.joinToString("|")}"
                         IpodifyBleService.instance?.sendPacketToBle(packet)
                     }
                 }
                 cmd.startsWith("PLAY_ITEM:") -> {
                     val parts = cmd.split(":")
-                    if (parts.size >= 3 && parts[1] == "playlists") {
-                        val idx = parts[2].toIntOrNull() ?: 0
-                        val uri = SpotifyApiHelper.playlistUris.getOrNull(idx)
-                        if (uri != null) {
-                            SpotifyApiHelper.playItem(this, uri)
-                        } else {
-                            controller.transportControls.play()
-                        }
+                    val idx = parts.getOrNull(2)?.toIntOrNull() ?: 0
+                    val uri = SpotifyApiHelper.playlistUris.getOrNull(idx)
+                    if (uri != null) {
+                        SpotifyApiHelper.playItem(this, uri)
                     } else {
-                        controller.transportControls.play()
+                        controller?.transportControls?.play()
                     }
                 }
             }

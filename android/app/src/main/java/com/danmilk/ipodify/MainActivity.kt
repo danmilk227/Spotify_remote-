@@ -1,6 +1,8 @@
 package com.danmilk.ipodify
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -8,11 +10,20 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.View
 import android.widget.Button
+import android.widget.EditText
+import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
 
@@ -25,7 +36,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPermissions: TextView
     private lateinit var btnGrantPerms: Button
     private lateinit var btnNotifAccess: Button
+
+    private lateinit var etClientId: EditText
+    private lateinit var btnSaveClientId: Button
+    private lateinit var btnCopyRedirect: Button
+    private lateinit var tvSpotifyStatus: TextView
     private lateinit var btnSpotifyLogin: Button
+
+    private lateinit var pbOta: ProgressBar
+    private lateinit var tvOtaStatus: TextView
+    private lateinit var btnOtaUpdate: Button
+
     private lateinit var btnToggleService: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,11 +58,39 @@ class MainActivity : AppCompatActivity() {
         tvPermissions = findViewById(R.id.tvPermissions)
         btnGrantPerms = findViewById(R.id.btnGrantPerms)
         btnNotifAccess = findViewById(R.id.btnNotifAccess)
+
+        etClientId = findViewById(R.id.etClientId)
+        btnSaveClientId = findViewById(R.id.btnSaveClientId)
+        btnCopyRedirect = findViewById(R.id.btnCopyRedirect)
+        tvSpotifyStatus = findViewById(R.id.tvSpotifyStatus)
         btnSpotifyLogin = findViewById(R.id.btnSpotifyLogin)
+
+        pbOta = findViewById(R.id.pbOta)
+        tvOtaStatus = findViewById(R.id.tvOtaStatus)
+        btnOtaUpdate = findViewById(R.id.btnOtaUpdate)
+
         btnToggleService = findViewById(R.id.btnToggleService)
 
+        // Load saved or default client ID
+        etClientId.setText(SpotifyApiHelper.getClientId(this))
+
+        btnSaveClientId.setOnClickListener {
+            val id = etClientId.text.toString().trim()
+            if (id.isNotEmpty()) {
+                SpotifyApiHelper.saveClientId(this, id)
+                Toast.makeText(this, "Client ID сохранен!", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        btnCopyRedirect.setOnClickListener {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("Spotify Redirect URI", SpotifyApiHelper.REDIRECT_URI))
+            Toast.makeText(this, "Redirect URI скопирован: ${SpotifyApiHelper.REDIRECT_URI}", Toast.LENGTH_SHORT).show()
+        }
+
         btnSpotifyLogin.setOnClickListener {
-            val authUrl = "https://accounts.spotify.com/authorize?client_id=${SpotifyApiHelper.CLIENT_ID}&response_type=token&redirect_uri=${SpotifyApiHelper.REDIRECT_URI}&scope=playlist-read-private%20playlist-read-collaborative%20user-read-playback-state%20user-modify-playback-state"
+            val clientId = SpotifyApiHelper.getClientId(this)
+            val authUrl = "https://accounts.spotify.com/authorize?client_id=$clientId&response_type=token&redirect_uri=${SpotifyApiHelper.REDIRECT_URI}&scope=playlist-read-private%20playlist-read-collaborative%20user-read-playback-state%20user-modify-playback-state%20user-library-read%20user-read-recently-played%20user-top-read%20user-follow-read"
             val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
             startActivity(browserIntent)
         }
@@ -52,6 +101,10 @@ class MainActivity : AppCompatActivity() {
 
         btnNotifAccess.setOnClickListener {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
+
+        btnOtaUpdate.setOnClickListener {
+            startOtaWorkflow()
         }
 
         btnToggleService.setOnClickListener {
@@ -107,22 +160,115 @@ class MainActivity : AppCompatActivity() {
             if (fragment != null && fragment.contains("access_token=")) {
                 val token = fragment.substringAfter("access_token=").substringBefore("&")
                 SpotifyApiHelper.saveAccessToken(this, token)
+                Toast.makeText(this, "Spotify успешно авторизован!", Toast.LENGTH_SHORT).show()
                 updateUI()
+            }
+        }
+    }
+
+    private fun startOtaWorkflow() {
+        val bleService = IpodifyBleService.instance
+        if (bleService == null || !IpodifyBleService.isConnected) {
+            Toast.makeText(this, "Сначала подключитесь к пульту iPodify по Bluetooth!", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        btnOtaUpdate.isEnabled = false
+        pbOta.visibility = View.VISIBLE
+        pbOta.progress = 0
+        tvOtaStatus.text = "Загрузка прошивки с GitHub..."
+
+        thread {
+            try {
+                // Пытаемся скачать свежий бинарник прошивки с GitHub
+                val firmwareUrls = listOf(
+                    "https://raw.githubusercontent.com/danmilk227/Spotify_remote-/main/firmware/firmware.bin",
+                    "https://danmilk227.github.io/Spotify_remote-/firmware/firmware.bin"
+                )
+
+                var firmwareBytes: ByteArray? = null
+                for (urlStr in firmwareUrls) {
+                    try {
+                        val url = URL(urlStr)
+                        val conn = url.openConnection() as HttpURLConnection
+                        conn.connectTimeout = 5000
+                        conn.readTimeout = 7000
+                        if (conn.responseCode == 200) {
+                            val baos = ByteArrayOutputStream()
+                            val buffer = ByteArray(4096)
+                            val input: InputStream = conn.inputStream
+                            var read: Int
+                            while (input.read(buffer).also { read = it } != -1) {
+                                baos.write(buffer, 0, read)
+                            }
+                            input.close()
+                            firmwareBytes = baos.toByteArray()
+                            if (firmwareBytes.size > 50000) break
+                        }
+                    } catch (e: Exception) {
+                        // try next URL
+                    }
+                }
+
+                if (firmwareBytes == null || firmwareBytes.size < 50000) {
+                    runOnUiThread {
+                        btnOtaUpdate.isEnabled = true
+                        tvOtaStatus.text = "Ошибка: не удалось скачать бинарник с GitHub"
+                        Toast.makeText(this@MainActivity, "Ошибка скачивания прошивки с GitHub", Toast.LENGTH_LONG).show()
+                    }
+                    return@thread
+                }
+
+                val totalSize = firmwareBytes.size
+                runOnUiThread {
+                    tvOtaStatus.text = "Бинарник загружен (${totalSize / 1024} KB). Передача на ESP32..."
+                }
+
+                bleService.startOtaUpdate(
+                    firmwareBytes,
+                    onProgress = { percent, status ->
+                        runOnUiThread {
+                            pbOta.progress = percent
+                            tvOtaStatus.text = status
+                        }
+                    },
+                    onComplete = { success, msg ->
+                        runOnUiThread {
+                            btnOtaUpdate.isEnabled = true
+                            tvOtaStatus.text = msg
+                            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                )
+
+            } catch (e: Exception) {
+                runOnUiThread {
+                    btnOtaUpdate.isEnabled = true
+                    tvOtaStatus.text = "Сбой OTA: ${e.message}"
+                }
             }
         }
     }
 
     fun updateUI() {
         runOnUiThread {
-            val hasToken = SpotifyApiHelper.getAccessToken(this) != null
-            tvStatus.text = "Bluetooth: ${IpodifyBleService.currentStatus}\nМедиа: ${MediaListenerService.lastTrackInfo}\nSpotify API: ${if (hasToken) "✅ Авторизован (плейлисты активны)" else "❌ Не авторизован"}"
+            val hasToken = SpotifyApiHelper.hasValidToken(this)
+            tvStatus.text = "Bluetooth: ${IpodifyBleService.currentStatus}\nМедиа: ${MediaListenerService.lastTrackInfo}"
+
+            if (hasToken) {
+                tvSpotifyStatus.text = "Spotify токен: ✅ Авторизован (Web API активно)"
+                tvSpotifyStatus.setTextColor(0xFF1DB954.toInt())
+            } else {
+                tvSpotifyStatus.text = "Spotify токен: ❌ Не авторизован (нажмите кнопку ниже)"
+                tvSpotifyStatus.setTextColor(0xFFF59E0B.toInt())
+            }
 
             val hasNotif = isNotificationServiceEnabled()
             val hasBt = hasBluetoothPermissions()
 
             tvPermissions.text = buildString {
                 append("Bluetooth доступ: ").append(if (hasBt) "✅ Разрешен\n" else "❌ Требуется\n")
-                append("Доступ к медиа/уведомлениям: ").append(if (hasNotif) "✅ Разрешен\n" else "❌ Требуется\n")
+                append("Доступ к медиа: ").append(if (hasNotif) "✅ Разрешен\n" else "❌ Требуется\n")
             }
 
             btnNotifAccess.isEnabled = !hasNotif

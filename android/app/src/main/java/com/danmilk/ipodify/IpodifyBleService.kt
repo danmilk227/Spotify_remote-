@@ -1,6 +1,5 @@
 package com.danmilk.ipodify
 
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -28,32 +27,40 @@ import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.util.UUID
+import kotlin.concurrent.thread
 
-@SuppressLint("MissingPermission")
 class IpodifyBleService : Service() {
 
     companion object {
-        private const val TAG = "iPodifyBLE"
-        private const val NOTIF_CHANNEL_ID = "ipodify_ble_channel"
+        private const val TAG = "IpodifyBleService"
+        private const val NOTIF_CHANNEL_ID = "ipodify_channel"
         private const val NOTIF_ID = 1001
 
         val SERVICE_UUID: UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
-        val RX_UUID: UUID      = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E") // Телефон -> ESP32
-        val TX_UUID: UUID      = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E") // ESP32 -> Телефон
+        val RX_UUID: UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E") // Телефон -> ESP32
+        val TX_UUID: UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E") // ESP32 -> Телефон
+        val OTA_UUID: UUID = UUID.fromString("6E400004-B5A3-F393-E0A9-E50E24DCCA9E") // OTA Binary Stream
         val CLIENT_CONFIG_DESCRIPTOR: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         var instance: IpodifyBleService? = null
         var isConnected: Boolean = false
-        var currentStatus: String = "Инициализация..."
+        var currentStatus: String = "Отключено"
     }
 
-    private val bluetoothManager by lazy { getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager }
-    private val bluetoothAdapter: BluetoothAdapter? get() = bluetoothManager.adapter
+    private val bluetoothAdapter: BluetoothAdapter? by lazy {
+        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        manager.adapter
+    }
+
     private var bluetoothGatt: BluetoothGatt? = null
     private var rxChar: BluetoothGattCharacteristic? = null
-
+    private var otaChar: BluetoothGattCharacteristic? = null
     private var isScanning = false
     private val handler = Handler(Looper.getMainLooper())
+
+    var isOtaInProgress = false
+    var otaCallback: ((percent: Int, status: String) -> Unit)? = null
+    var otaCompletion: ((success: Boolean, message: String) -> Unit)? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -112,50 +119,55 @@ class IpodifyBleService : Service() {
             .build()
     }
 
-    private fun updateNotification(statusText: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager?.notify(NOTIF_ID, buildNotification(statusText))
+    fun updateNotification(statusText: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIF_ID, buildNotification(statusText))
         MainActivity.instance?.updateUI()
     }
 
     fun startAutoConnectScan() {
-        val scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
-        if (isScanning || isConnected) return
+        if (isConnected || isScanning) return
+        val scanner = bluetoothAdapter?.bluetoothLeScanner
+        if (scanner == null) {
+            updateNotification("Bluetooth выключен")
+            return
+        }
 
-        isScanning = true
-        updateNotification("Поиск устройства iPodify...")
-        Log.i(TAG, "Starting BLE scan for iPodify...")
-
-        val filterByUuid = ScanFilter.Builder()
+        val filter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
-        val filterByName = ScanFilter.Builder()
-            .setDeviceName("iPodify 3G")
             .build()
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
+        isScanning = true
+        updateNotification("Поиск iPodify 3G...")
+
         try {
-            // Сканируем с фильтрами, а если устройство найдено — коннектимся
-            scanner.startScan(listOf(filterByUuid, filterByName), settings, scanCallback)
+            scanner.startScan(listOf(filter), settings, scanCallback)
+            // Таймаут на непрерывное сканирование — 15 секунд
+            handler.postDelayed({
+                if (isScanning && !isConnected) {
+                    stopScan()
+                    handler.postDelayed({ startAutoConnectScan() }, 3000)
+                }
+            }, 15000)
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting scan: ${e.message}")
-            // Fallback без фильтров
+            Log.e(TAG, "Start scan error: ${e.message}")
+            // Fallback без фильтра UUID
             try {
                 scanner.startScan(scanCallback)
             } catch (e2: Exception) {
-                Log.e(TAG, "Fallback scan failed: ${e2.message}")
+                Log.e(TAG, "Unfiltered scan error: ${e2.message}")
             }
         }
     }
 
     private fun stopScan() {
-        if (!isScanning) return
-        val scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
         try {
-            scanner.stopScan(scanCallback)
+            val scanner = bluetoothAdapter?.bluetoothLeScanner
+            scanner?.stopScan(scanCallback)
         } catch (e: Exception) {
             Log.e(TAG, "Stop scan error: ${e.message}")
         }
@@ -198,6 +210,7 @@ class IpodifyBleService : Service() {
         } catch (e: Exception) {}
         bluetoothGatt = null
         rxChar = null
+        otaChar = null
         isConnected = false
     }
 
@@ -215,6 +228,10 @@ class IpodifyBleService : Service() {
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.w(TAG, "Disconnected from GATT server. Will auto-reconnect...")
                 isConnected = false
+                if (isOtaInProgress) {
+                    isOtaInProgress = false
+                    otaCompletion?.invoke(false, "Соединение разорвано во время обновления")
+                }
                 disconnectGatt()
                 updateNotification("Отключено. Авто-повтор через 3 сек...")
                 handler.postDelayed({ startAutoConnectScan() }, 3000)
@@ -231,6 +248,7 @@ class IpodifyBleService : Service() {
                 val service = gatt?.getService(SERVICE_UUID)
                 if (service != null) {
                     rxChar = service.getCharacteristic(RX_UUID)
+                    otaChar = service.getCharacteristic(OTA_UUID)
                     val txChar = service.getCharacteristic(TX_UUID)
 
                     if (txChar != null) {
@@ -258,6 +276,17 @@ class IpodifyBleService : Service() {
             val data = characteristic?.value ?: return
             val cmd = String(data, Charsets.UTF_8).trim()
             Log.i(TAG, "Received command from ESP32: $cmd")
+
+            if (cmd.startsWith("OTA_ACK:DONE")) {
+                isOtaInProgress = false
+                otaCompletion?.invoke(true, "Успешно! ESP32 перезагружается...")
+                return
+            } else if (cmd.startsWith("OTA_ERR:")) {
+                isOtaInProgress = false
+                otaCompletion?.invoke(false, "Ошибка ESP32: $cmd")
+                return
+            }
+
             MediaListenerService.instance?.handleCommand(cmd)
         }
     }
@@ -273,6 +302,63 @@ class IpodifyBleService : Service() {
             gatt.writeCharacteristic(char)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send packet to BLE: ${e.message}")
+        }
+    }
+
+    fun startOtaUpdate(
+        firmwareBytes: ByteArray,
+        onProgress: (percent: Int, status: String) -> Unit,
+        onComplete: (success: Boolean, message: String) -> Unit
+    ) {
+        val gatt = bluetoothGatt
+        val char = otaChar
+        if (!isConnected || gatt == null || char == null) {
+            onComplete(false, "ESP32 не подключен по BLE или нет OTA канала")
+            return
+        }
+        if (isOtaInProgress) {
+            onComplete(false, "Обновление уже выполняется")
+            return
+        }
+
+        isOtaInProgress = true
+        otaCallback = onProgress
+        otaCompletion = onComplete
+
+        thread {
+            try {
+                onProgress(0, "Инициализация OTA на ESP32...")
+                sendPacketToBle("OTA_START:${firmwareBytes.size}")
+                Thread.sleep(400)
+
+                val chunkSize = 240
+                val totalSize = firmwareBytes.size
+                var offset = 0
+
+                while (offset < totalSize && isOtaInProgress) {
+                    val end = (offset + chunkSize).coerceAtMost(totalSize)
+                    val chunk = firmwareBytes.copyOfRange(offset, end)
+
+                    char.value = chunk
+                    char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    gatt.writeCharacteristic(char)
+
+                    offset = end
+                    val pct = (offset * 100) / totalSize
+                    onProgress(pct, "Отправка: $pct% ($offset / $totalSize B)")
+                    Thread.sleep(10)
+                }
+
+                if (isOtaInProgress) {
+                    onProgress(100, "Проверка и запись прошивки...")
+                    sendPacketToBle("OTA_END")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "OTA failed: ${e.message}")
+                isOtaInProgress = false
+                sendPacketToBle("OTA_ABORT")
+                onComplete(false, "Ошибка отправки: ${e.message}")
+            }
         }
     }
 }

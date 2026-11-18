@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- iPod body: black rounded rectangle -->
+    <path
+        android:fillColor="#121212"
+        android:pathData="M38,22 h32 a8,8 0 0 1 8,8 v48 a8,8 0 0 1 -8,8 h-32 a8,8 0 0 1 -8,-8 v-48 a8,8 0 0 1 8,-8 z" />
+
+    <!-- iPod screen cutout (Spotify green so it cuts through the black body) -->
+    <path
+        android:fillColor="#1DB954"
+        android:pathData="M36,29 h36 a2,2 0 0 1 2,2 v20 a2,2 0 0 1 -2,2 h-36 a2,2 0 0 1 -2,-2 v-20 a2,2 0 0 1 2,-2 z" />
+
+    <!-- iPod clickwheel outer circle -->
+    <path
+        android:fillColor="#1DB954"
+        android:pathData="M54,67 m -11,0 a 11,11 0 1,0 22,0 a 11,11 0 1,0 -22,0" />
+
+    <!-- iPod clickwheel center button -->
+    <path
+        android:fillColor="#121212"
+        android:pathData="M54,67 m -4.5,0 a 4.5,4.5 0 1,0 9,0 a 4.5,4.5 0 1,0 -9,0" />
+
+</vector>

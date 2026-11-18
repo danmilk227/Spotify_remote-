@@ -1,85 +1,251 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="20dp"
-    android:background="#121212">
+    android:background="#121212"
+    android:fillViewport="true">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="iPodify Remote Bridge"
-        android:textColor="#1DB954"
-        android:textSize="22sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="4dp" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Фоновая служба авто-подключения к ESP32"
-        android:textColor="#A1A1AA"
-        android:textSize="14sp"
-        android:layout_marginBottom="24dp" />
-
-    <TextView
-        android:id="@+id/tvStatus"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#1C1C1E"
-        android:padding="16dp"
-        android:text="Статус: Инициализация..."
-        android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="16dp" />
+        android:orientation="vertical"
+        android:padding="20dp">
 
-    <TextView
-        android:id="@+id/tvPermissions"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#1C1C1E"
-        android:padding="14dp"
-        android:text="Проверка разрешений..."
-        android:textColor="#E4E4E7"
-        android:textSize="14sp"
-        android:lineSpacingExtra="4dp"
-        android:layout_marginBottom="20dp" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="iPodify Remote Bridge"
+            android:textColor="#1DB954"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="4dp" />
 
-    <Button
-        android:id="@+id/btnGrantPerms"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Предоставить Bluetooth доступ"
-        android:backgroundTint="#2563EB"
-        android:textColor="#FFFFFF"
-        android:layout_marginBottom="10dp" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Служба связи ESP32, Spotify API и BLE OTA"
+            android:textColor="#A1A1AA"
+            android:textSize="13sp"
+            android:layout_marginBottom="16dp" />
 
-    <Button
-        android:id="@+id/btnNotifAccess"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Разрешить доступ к медиа (Spotify)"
-        android:backgroundTint="#1DB954"
-        android:textColor="#000000"
-        android:layout_marginBottom="10dp" />
+        <!-- Status Box -->
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#1C1C1E"
+            android:padding="14dp"
+            android:text="Статус: Инициализация..."
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="12dp" />
 
-    <Button
-        android:id="@+id/btnSpotifyLogin"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Авторизовать Spotify (для плейлистов)"
-        android:backgroundTint="#1DB954"
-        android:textColor="#000000"
-        android:layout_marginBottom="16dp" />
+        <!-- Permissions Box -->
+        <TextView
+            android:id="@+id/tvPermissions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#1C1C1E"
+            android:padding="12dp"
+            android:text="Проверка разрешений..."
+            android:textColor="#E4E4E7"
+            android:textSize="13sp"
+            android:lineSpacingExtra="3dp"
+            android:layout_marginBottom="12dp" />
 
-    <Button
-        android:id="@+id/btnToggleService"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Перезапустить службу"
-        android:backgroundTint="#27272A"
-        android:textColor="#FFFFFF" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
 
-</LinearLayout>
+            <Button
+                android:id="@+id/btnGrantPerms"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Bluetooth доступ"
+                android:backgroundTint="#2563EB"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/btnNotifAccess"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Медиа доступ"
+                android:backgroundTint="#27272A"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:layout_marginStart="6dp" />
+        </LinearLayout>
+
+        <!-- Spotify Settings Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#1C1C1E"
+            android:padding="14dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Настройка Spotify Web API"
+                android:textColor="#1DB954"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Client ID (из Spotify Developer Dashboard):"
+                android:textColor="#A1A1AA"
+                android:textSize="12sp"
+                android:layout_marginBottom="4dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+
+                <EditText
+                    android:id="@+id/etClientId"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="#27272A"
+                    android:padding="10dp"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp"
+                    android:singleLine="true"
+                    android:hint="Вставьте Client ID"
+                    android:textColorHint="#71717A" />
+
+                <Button
+                    android:id="@+id/btnSaveClientId"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Сохранить"
+                    android:backgroundTint="#3F3F46"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp"
+                    android:layout_marginStart="6dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="12dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Redirect URI: ipodify://callback"
+                    android:textColor="#E4E4E7"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btnCopyRedirect"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Скопировать"
+                    android:backgroundTint="#27272A"
+                    android:textColor="#1DB954"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvSpotifyStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Spotify токен: Не авторизован"
+                android:textColor="#F59E0B"
+                android:textSize="13sp"
+                android:layout_marginBottom="10dp" />
+
+            <Button
+                android:id="@+id/btnSpotifyLogin"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Авторизовать Spotify"
+                android:backgroundTint="#1DB954"
+                android:textColor="#000000"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Wireless BLE OTA Update Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#1C1C1E"
+            android:padding="14dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Беспроводная прошивка (BLE OTA)"
+                android:textColor="#38BDF8"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="4dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Скачивает свежий бинарник с GitHub репо и шлет на ESP32 по BLE."
+                android:textColor="#A1A1AA"
+                android:textSize="12sp"
+                android:layout_marginBottom="10dp" />
+
+            <ProgressBar
+                android:id="@+id/pbOta"
+                style="@android:style/Widget.ProgressBar.Horizontal"
+                android:layout_width="match_parent"
+                android:layout_height="12dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#38BDF8"
+                android:visibility="gone"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/tvOtaStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Готов к проверке обновления"
+                android:textColor="#94A3B8"
+                android:textSize="12sp"
+                android:layout_marginBottom="10dp" />
+
+            <Button
+                android:id="@+id/btnOtaUpdate"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Обновить прошивку по Bluetooth"
+                android:backgroundTint="#0284C7"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <!-- Service Control -->
+        <Button
+            android:id="@+id/btnToggleService"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Перезапустить службу"
+            android:backgroundTint="#27272A"
+            android:textColor="#FFFFFF" />
+
+    </LinearLayout>
+</ScrollView>

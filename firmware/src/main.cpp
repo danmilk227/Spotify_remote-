@@ -10,10 +10,13 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include <Update.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // ======================= РАСПИНОВКА (ESP32-C3) ==============================
 // I2C OLED SSD1306
@@ -32,6 +35,7 @@
 #define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E" // Телефон -> ESP32
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E" // ESP32 -> Телефон
+#define CHARACTERISTIC_UUID_OTA "6E400004-B5A3-F393-E0A9-E50E24DCCA9E" // Телефон -> ESP32 (OTA binary stream)
 
 // ======================= ДИСПЛЕЙ SSD1306 128x64 =============================
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_I2C_SCL, PIN_I2C_SDA);
@@ -47,7 +51,8 @@ enum ScreenId {
     SCR_CLOCK,
     SCR_STOPWATCH,
     SCR_GAME_BRICK,
-    SCR_GAME_SNAKE
+    SCR_GAME_SNAKE,
+    SCR_OTA
 };
 
 struct MenuStackEntry {
@@ -137,16 +142,36 @@ const char* SETTINGS_MENU_LABELS[] = {
 };
 const int SETTINGS_MENU_COUNT = 7;
 
-// ======================= BLE СЕРВЕР =========================================
+// ======================= BLE И OTA СЕРВЕР ===================================
 BLEServer* pServer = nullptr;
 BLECharacteristic* pTxCharacteristic = nullptr;
+BLECharacteristic* pOtaCharacteristic = nullptr;
+
+SemaphoreHandle_t bleMutex = nullptr;
+String pendingBlePacket = "";
+bool hasNewBlePacket = false;
+
+// Состояние OTA-прошивки по Bluetooth
+bool isOtaUpdating = false;
+size_t otaTotalBytes = 0;
+size_t otaWrittenBytes = 0;
+int otaProgressPct = 0;
+String otaStatusMsg = "";
+
+uint32_t lastVolCmdMs = 0;
 
 void sendBleCommand(const String& cmd) {
-    Serial.println("[BLE TX] " + cmd);
     if (state.bleConnected && pTxCharacteristic) {
         pTxCharacteristic->setValue(cmd.c_str());
         pTxCharacteristic->notify();
-        delay(12);
+    }
+}
+
+void sendVolumeCommand(bool up) {
+    uint32_t now = millis();
+    if (now - lastVolCmdMs >= 100) {
+        lastVolCmdMs = now;
+        sendBleCommand(up ? "CMD:VOL_UP" : "CMD:VOL_DOWN");
     }
 }
 
@@ -162,6 +187,47 @@ void showAlphabetPopup(char c) {
 
 // Парсер входящих пакетов от Android-приложения
 void parseIncomingBlePacket(const String& raw) {
+    if (raw.startsWith("OTA_START:")) {
+        otaTotalBytes = raw.substring(10).toInt();
+        otaWrittenBytes = 0;
+        otaProgressPct = 0;
+        otaStatusMsg = "Preparing OTA...";
+        if (otaTotalBytes > 0 && Update.begin(otaTotalBytes, U_FLASH)) {
+            isOtaUpdating = true;
+            otaStatusMsg = "Flashing...";
+            pushScreen(SCR_OTA, "ota", "Firmware OTA");
+            sendBleCommand("OTA_ACK:START");
+        } else {
+            isOtaUpdating = false;
+            otaStatusMsg = "OTA Init Failed";
+            sendBleCommand("OTA_ERR:INIT");
+        }
+        return;
+    } else if (raw == "OTA_END") {
+        if (isOtaUpdating) {
+            if (Update.end(true)) {
+                otaProgressPct = 100;
+                otaStatusMsg = "Success! Rebooting...";
+                sendBleCommand("OTA_ACK:DONE");
+                delay(700);
+                ESP.restart();
+            } else {
+                isOtaUpdating = false;
+                otaStatusMsg = "OTA Err: " + String(Update.getError());
+                sendBleCommand("OTA_ERR:END");
+            }
+        }
+        return;
+    } else if (raw == "OTA_ABORT") {
+        if (isOtaUpdating) {
+            Update.abort();
+            isOtaUpdating = false;
+            otaStatusMsg = "Aborted";
+            popScreen();
+        }
+        return;
+    }
+
     if (raw.startsWith("NP|")) {
         // Формат: NP|play|like|shuf|rep|qIdx|qTot|pos|dur|vol|title|artist|album
         int idx[12];
@@ -224,8 +290,29 @@ class ServerCallbacks : public BLEServerCallbacks {
 class RxCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) override {
         String rxValue = pCharacteristic->getValue();
-        if (rxValue.length() > 0) {
-            parseIncomingBlePacket(rxValue);
+        if (rxValue.length() > 0 && bleMutex) {
+            if (xSemaphoreTake(bleMutex, (TickType_t)10) == pdTRUE) {
+                pendingBlePacket = rxValue;
+                hasNewBlePacket = true;
+                xSemaphoreGive(bleMutex);
+            }
+        }
+    }
+};
+
+class OtaCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) override {
+        if (!isOtaUpdating) return;
+        uint8_t* data = pCharacteristic->getData();
+        size_t len = pCharacteristic->getLength();
+        if (data && len > 0) {
+            size_t written = Update.write(data, len);
+            if (written > 0) {
+                otaWrittenBytes += written;
+                if (otaTotalBytes > 0) {
+                    otaProgressPct = (int)((otaWrittenBytes * 100ULL) / otaTotalBytes);
+                }
+            }
         }
     }
 };
@@ -248,6 +335,12 @@ void initBLE() {
         BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
     );
     pRxCharacteristic->setCallbacks(new RxCallbacks());
+
+    pOtaCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID_OTA,
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+    );
+    pOtaCharacteristic->setCallbacks(new OtaCallbacks());
 
     pService->start();
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
@@ -321,6 +414,7 @@ void pushScreen(ScreenId nextScr, const String& folderId, const String& title) {
 }
 
 void popScreen() {
+    if (isOtaUpdating) return;
     if (state.currentScreen == SCR_NOW_PLAYING && state.isScrubbing) {
         state.isScrubbing = false;
         return;
@@ -397,10 +491,10 @@ void handleNavScroll(int dir) {
             // dir < 0 (ВВЕРХ) -> Громкость +, dir > 0 (ВНИЗ) -> Громкость -
             if (dir < 0) {
                 state.volumePct = min(100, state.volumePct + 5);
-                sendBleCommand("CMD:VOL_UP");
+                sendVolumeCommand(true);
             } else {
                 state.volumePct = max(0, state.volumePct - 5);
-                sendBleCommand("CMD:VOL_DOWN");
+                sendVolumeCommand(false);
             }
             state.showVolumeOverlay = true;
             state.volumeTimeoutMs = millis() + 1800;
@@ -550,6 +644,7 @@ struct BtnTracker {
     uint32_t pressStartMs = 0;
     bool longFired = false;
     uint32_t lastRepeatMs = 0;
+    bool repeatFired = false;
 };
 
 BtnTracker btns[6] = {
@@ -562,6 +657,7 @@ BtnTracker btns[6] = {
 };
 
 void onButtonShortPress(uint8_t pin) {
+    if (isOtaUpdating) return;
     switch (pin) {
         case PIN_BTN_MENU:
             popScreen();
@@ -618,6 +714,7 @@ void onButtonShortPress(uint8_t pin) {
 }
 
 void onButtonLongPress(uint8_t pin) {
+    if (isOtaUpdating) return;
     if (state.currentScreen == SCR_NOW_PLAYING) {
         if (pin == PIN_BTN_CENTER) {
             handleCenterLongPress();
@@ -634,6 +731,7 @@ void onButtonLongPress(uint8_t pin) {
 }
 
 void onButtonRepeat(uint8_t pin) {
+    if (isOtaUpdating) return;
     if (pin == PIN_BTN_UP) {
         handleNavScroll(-1);
     } else if (pin == PIN_BTN_DOWN) {
@@ -652,19 +750,26 @@ void pollButtons() {
         if (lvl == LOW && btns[i].lastLevel == HIGH) {
             btns[i].pressStartMs = now;
             btns[i].longFired = false;
+            btns[i].repeatFired = false;
             btns[i].lastRepeatMs = now;
         } else if (lvl == LOW) {
             if (!btns[i].longFired && (now - btns[i].pressStartMs > 550)) {
                 btns[i].longFired = true;
                 onButtonLongPress(btns[i].pin);
             }
-            if (now - btns[i].pressStartMs > 400 && (now - btns[i].lastRepeatMs > 220)) {
+            if (now - btns[i].pressStartMs > 350 && (now - btns[i].lastRepeatMs > 160)) {
                 btns[i].lastRepeatMs = now;
+                btns[i].repeatFired = true;
                 onButtonRepeat(btns[i].pin);
             }
         } else if (lvl == HIGH && btns[i].lastLevel == LOW) {
-            if (now - btns[i].pressStartMs > 25 && !btns[i].longFired) {
+            if (now - btns[i].pressStartMs > 25 && !btns[i].longFired && !btns[i].repeatFired) {
                 onButtonShortPress(btns[i].pin);
+            }
+        }
+        btns[i].lastLevel = lvl;
+    }
+}
             }
         }
         btns[i].lastLevel = lvl;
@@ -1021,6 +1126,25 @@ void drawOverlays() {
     }
 }
 
+void drawOtaScreen() {
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(14, 18, "Firmware Update");
+
+    u8g2.drawFrame(14, 28, 100, 10);
+    int barW = map(constrain(otaProgressPct, 0, 100), 0, 100, 0, 96);
+    u8g2.drawBox(16, 30, barW, 6);
+
+    char pBuf[16];
+    snprintf(pBuf, sizeof(pBuf), "%d%%", otaProgressPct);
+    int pw = u8g2.getUTF8Width(pBuf);
+    u8g2.drawStr((128 - pw) / 2, 48, pBuf);
+
+    if (otaStatusMsg.length() > 0) {
+        int sw = u8g2.getUTF8Width(otaStatusMsg.c_str());
+        u8g2.drawStr(max(2, (128 - sw) / 2), 60, otaStatusMsg.c_str());
+    }
+}
+
 // ======================= SETUP & LOOP =======================================
 uint32_t lastSecondTickMs = 0;
 uint32_t lastFrameMs = 0;
@@ -1031,6 +1155,8 @@ void setup() {
     for (int i = 0; i < 6; i++) {
         pinMode(btns[i].pin, INPUT_PULLUP);
     }
+
+    bleMutex = xSemaphoreCreateMutex();
 
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     Wire.setTimeOut(50);   // Защита от зависания шины I2C при помехах
@@ -1045,6 +1171,19 @@ void setup() {
 }
 
 void loop() {
+    // Безопасная обработка входящих пакетов BLE в основном потоке (без порчи кучи)
+    if (hasNewBlePacket && bleMutex) {
+        String pkt = "";
+        if (xSemaphoreTake(bleMutex, (TickType_t)5) == pdTRUE) {
+            pkt = pendingBlePacket;
+            hasNewBlePacket = false;
+            xSemaphoreGive(bleMutex);
+        }
+        if (pkt.length() > 0) {
+            parseIncomingBlePacket(pkt);
+        }
+    }
+
     pollButtons();
 
     uint32_t now = millis();
@@ -1102,6 +1241,9 @@ void loop() {
                 break;
             case SCR_GAME_SNAKE:
                 updateAndDrawSnakeGame();
+                break;
+            case SCR_OTA:
+                drawOtaScreen();
                 break;
         }
 
