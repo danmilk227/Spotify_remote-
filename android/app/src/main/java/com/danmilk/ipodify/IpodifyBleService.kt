@@ -331,9 +331,10 @@ class IpodifyBleService : Service() {
                 sendPacketToBle("OTA_START:${firmwareBytes.size}")
                 Thread.sleep(400)
 
-                val chunkSize = 240
+                val chunkSize = 128
                 val totalSize = firmwareBytes.size
                 var offset = 0
+                var packetIndex = 0
 
                 while (offset < totalSize && isOtaInProgress) {
                     val end = (offset + chunkSize).coerceAtMost(totalSize)
@@ -341,17 +342,35 @@ class IpodifyBleService : Service() {
 
                     char.value = chunk
                     char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                    gatt.writeCharacteristic(char)
+                    
+                    var success = gatt.writeCharacteristic(char)
+                    var retries = 0
+                    while (!success && retries < 25 && isOtaInProgress) {
+                        Thread.sleep(15)
+                        success = gatt.writeCharacteristic(char)
+                        retries++
+                    }
+
+                    if (!success && isOtaInProgress) {
+                        throw IllegalStateException("Сбой отправки пакета OTA на смещении $offset (буфер BLE переполнен)")
+                    }
 
                     offset = end
+                    packetIndex++
                     val pct = (offset * 100) / totalSize
                     onProgress(pct, "Отправка: $pct% ($offset / $totalSize B)")
-                    Thread.sleep(10)
+
+                    // Небольшая пауза для гарантированной записи во Flash память ESP32
+                    Thread.sleep(18)
+                    if (packetIndex % 16 == 0) {
+                        Thread.sleep(40)
+                    }
                 }
 
                 if (isOtaInProgress) {
-                    onProgress(100, "Проверка и запись прошивки...")
-                    sendPacketToBle("OTA_END")
+                    onProgress(100, "Проверка целостности и финализация...")
+                    Thread.sleep(300)
+                    sendPacketToBle("OTA_END:$totalSize")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "OTA failed: ${e.message}")

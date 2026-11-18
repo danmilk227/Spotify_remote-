@@ -232,18 +232,27 @@ void parseIncomingBlePacket(const String& raw) {
             sendBleCommand("OTA_ERR:INIT");
         }
         return;
-    } else if (raw == "OTA_END") {
+    } else if (raw.startsWith("OTA_END")) {
         if (isOtaUpdating) {
-            if (Update.end(true)) {
+            Serial.printf("[OTA] OTA_END received. Received: %u / %u bytes\n", otaWrittenBytes, otaTotalBytes);
+            if (otaTotalBytes > 0 && otaWrittenBytes < otaTotalBytes) {
+                isOtaUpdating = false;
+                otaStatusMsg = "Err: Missed " + String(otaTotalBytes - otaWrittenBytes) + " B";
+                Update.abort();
+                sendBleCommand("OTA_ERR:INCOMPLETE");
+                return;
+            }
+
+            if (Update.end(false)) { // false: ensure exact binary size and checksum match
                 otaProgressPct = 100;
                 otaStatusMsg = "Success! Rebooting...";
                 sendBleCommand("OTA_ACK:DONE");
-                delay(700);
+                delay(1000);
                 ESP.restart();
             } else {
                 isOtaUpdating = false;
                 otaStatusMsg = "OTA Err: " + String(Update.getError());
-                sendBleCommand("OTA_ERR:END");
+                sendBleCommand("OTA_ERR:END_" + String(Update.getError()));
             }
         }
         return;
