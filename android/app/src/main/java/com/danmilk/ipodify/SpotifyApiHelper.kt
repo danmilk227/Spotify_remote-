@@ -1,6 +1,7 @@
 package com.danmilk.ipodify
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -8,6 +9,8 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
+import java.security.SecureRandom
 import kotlin.concurrent.thread
 
 object SpotifyApiHelper {
@@ -49,10 +52,160 @@ object SpotifyApiHelper {
         prefs.edit().putString("spotify_access_token", token.trim()).apply()
     }
 
+    fun getRefreshToken(context: Context): String? {
+        val prefs = context.getSharedPreferences("ipodify_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("spotify_refresh_token", null)
+    }
+
+    fun saveRefreshToken(context: Context, token: String) {
+        val prefs = context.getSharedPreferences("ipodify_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("spotify_refresh_token", token.trim()).apply()
+    }
+
     fun hasValidToken(context: Context): Boolean {
         val token = getAccessToken(context)
         return !token.isNullOrEmpty()
     }
+
+    // ==================== PKCE AUTHENTICATION ====================
+
+    private fun generateCodeVerifier(): String {
+        val secureRandom = SecureRandom()
+        val code = ByteArray(32)
+        secureRandom.nextBytes(code)
+        return Base64.encodeToString(code, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    private fun generateCodeChallenge(verifier: String): String {
+        val bytes = verifier.toByteArray(Charsets.US_ASCII)
+        val md = MessageDigest.getInstance("SHA-256")
+        val digest = md.digest(bytes)
+        return Base64.encodeToString(digest, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    fun getAuthorizeUrl(context: Context): String {
+        val clientId = getClientId(context)
+        val verifier = generateCodeVerifier()
+        val prefs = context.getSharedPreferences("ipodify_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("spotify_code_verifier", verifier).apply()
+
+        val challenge = generateCodeChallenge(verifier)
+        val scope = "playlist-read-private%20playlist-read-collaborative%20user-read-playback-state%20user-modify-playback-state%20user-library-read%20user-read-recently-played%20user-top-read%20user-follow-read"
+
+        return "https://accounts.spotify.com/authorize?client_id=$clientId&response_type=code&redirect_uri=$REDIRECT_URI&code_challenge_method=S256&code_challenge=$challenge&scope=$scope"
+    }
+
+    fun exchangeCodeForToken(context: Context, code: String, callback: (Boolean, String) -> Unit) {
+        val clientId = getClientId(context)
+        val prefs = context.getSharedPreferences("ipodify_prefs", Context.MODE_PRIVATE)
+        val verifier = prefs.getString("spotify_code_verifier", null)
+
+        if (verifier.isNullOrEmpty()) {
+            callback(false, "Ошибка: code_verifier не найден")
+            return
+        }
+
+        thread {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL("https://accounts.spotify.com/api/token")
+                conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
+                conn.doOutput = true
+
+                val postParams = "client_id=$clientId&grant_type=authorization_code&code=$code&redirect_uri=$REDIRECT_URI&code_verifier=$verifier"
+                val writer = OutputStreamWriter(conn.outputStream)
+                writer.write(postParams)
+                writer.flush()
+                writer.close()
+
+                val resCode = conn.responseCode
+                if (resCode in 200..299) {
+                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                    val body = reader.readText()
+                    reader.close()
+
+                    val json = JSONObject(body)
+                    val accessToken = json.optString("access_token")
+                    val refreshToken = json.optString("refresh_token")
+
+                    if (accessToken.isNotEmpty()) {
+                        saveAccessToken(context, accessToken)
+                        if (refreshToken.isNotEmpty()) {
+                            saveRefreshToken(context, refreshToken)
+                        }
+                        callback(true, "Spotify успешно авторизован!")
+                        return@thread
+                    }
+                }
+
+                val errReader = conn.errorStream?.let { BufferedReader(InputStreamReader(it)) }
+                val errBody = errReader?.readText() ?: "HTTP $resCode"
+                errReader?.close()
+                Log.e(TAG, "Token exchange failed: $errBody")
+                callback(false, "Ошибка Spotify: $errBody")
+            } catch (e: Exception) {
+                Log.e(TAG, "Token exchange exception: ${e.message}")
+                callback(false, "Ошибка сети: ${e.message}")
+            } finally {
+                conn?.disconnect()
+            }
+        }
+    }
+
+    fun refreshAccessToken(context: Context, callback: ((Boolean) -> Unit)? = null) {
+        val refreshToken = getRefreshToken(context)
+        val clientId = getClientId(context)
+        if (refreshToken.isNullOrEmpty()) {
+            callback?.invoke(false)
+            return
+        }
+
+        thread {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL("https://accounts.spotify.com/api/token")
+                conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
+                conn.doOutput = true
+
+                val postParams = "client_id=$clientId&grant_type=refresh_token&refresh_token=$refreshToken"
+                val writer = OutputStreamWriter(conn.outputStream)
+                writer.write(postParams)
+                writer.flush()
+                writer.close()
+
+                if (conn.responseCode in 200..299) {
+                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                    val body = reader.readText()
+                    reader.close()
+
+                    val json = JSONObject(body)
+                    val accessToken = json.optString("access_token")
+                    val newRefresh = json.optString("refresh_token")
+                    if (accessToken.isNotEmpty()) {
+                        saveAccessToken(context, accessToken)
+                        if (newRefresh.isNotEmpty()) saveRefreshToken(context, newRefresh)
+                        callback?.invoke(true)
+                        return@thread
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh token: ${e.message}")
+            } finally {
+                conn?.disconnect()
+            }
+            callback?.invoke(false)
+        }
+    }
+
+    // ==================== GENERIC API REQUEST ====================
 
     private fun apiRequest(
         context: Context,
@@ -87,6 +240,11 @@ object SpotifyApiHelper {
                 }
 
                 val code = conn.responseCode
+                if (code == 401) {
+                    // Токен устарел — пробуем обновить через refresh_token
+                    refreshAccessToken(context)
+                }
+
                 val responseStr = if (code in 200..299) {
                     val reader = BufferedReader(InputStreamReader(conn.inputStream))
                     val str = reader.readText()
@@ -104,7 +262,7 @@ object SpotifyApiHelper {
         }
     }
 
-    // ==================== PLAYER CONTROLS (Spotify Web API) ====================
+    // ==================== PLAYER CONTROLS ====================
 
     fun play(context: Context) {
         apiRequest(context, "/me/player/play", "PUT")

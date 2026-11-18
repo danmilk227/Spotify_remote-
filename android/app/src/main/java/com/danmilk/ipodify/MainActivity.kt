@@ -89,8 +89,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnSpotifyLogin.setOnClickListener {
-            val clientId = SpotifyApiHelper.getClientId(this)
-            val authUrl = "https://accounts.spotify.com/authorize?client_id=$clientId&response_type=token&redirect_uri=${SpotifyApiHelper.REDIRECT_URI}&scope=playlist-read-private%20playlist-read-collaborative%20user-read-playback-state%20user-modify-playback-state%20user-library-read%20user-read-recently-played%20user-top-read%20user-follow-read"
+            val authUrl = SpotifyApiHelper.getAuthorizeUrl(this)
             val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(authUrl))
             startActivity(browserIntent)
         }
@@ -156,12 +155,27 @@ class MainActivity : AppCompatActivity() {
     private fun handleIntent(intent: Intent?) {
         val data = intent?.data ?: return
         if (data.scheme == "ipodify" && data.host == "callback") {
-            val fragment = data.fragment
-            if (fragment != null && fragment.contains("access_token=")) {
-                val token = fragment.substringAfter("access_token=").substringBefore("&")
-                SpotifyApiHelper.saveAccessToken(this, token)
-                Toast.makeText(this, "Spotify успешно авторизован!", Toast.LENGTH_SHORT).show()
-                updateUI()
+            val code = data.getQueryParameter("code")
+            val error = data.getQueryParameter("error")
+
+            if (!code.isNullOrEmpty()) {
+                tvSpotifyStatus.text = "Обмен кода на токен..."
+                SpotifyApiHelper.exchangeCodeForToken(this, code) { success, msg ->
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                        updateUI()
+                    }
+                }
+            } else if (!error.isNullOrEmpty()) {
+                Toast.makeText(this, "Ошибка авторизации: $error", Toast.LENGTH_LONG).show()
+            } else {
+                val fragment = data.fragment
+                if (fragment != null && fragment.contains("access_token=")) {
+                    val token = fragment.substringAfter("access_token=").substringBefore("&")
+                    SpotifyApiHelper.saveAccessToken(this, token)
+                    Toast.makeText(this, "Spotify успешно авторизован!", Toast.LENGTH_SHORT).show()
+                    updateUI()
+                }
             }
         }
     }
