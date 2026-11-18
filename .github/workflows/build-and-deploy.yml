@@ -37,6 +37,7 @@ jobs:
           cp firmware/.pio/build/esp32-c3-devkitm-1/bootloader.bin dist/firmware/
           cp firmware/.pio/build/esp32-c3-devkitm-1/partitions.bin dist/firmware/
           cp firmware/.pio/build/esp32-c3-devkitm-1/firmware.bin dist/firmware/
+          cp firmware/.pio/build/esp32-c3-devkitm-1/firmware.bin dist/firmware.bin || true
 
       - name: Upload Binaries Artifact
         uses: actions/upload-artifact@v4
