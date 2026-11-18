@@ -171,14 +171,35 @@ const uint32_t SCREEN_TIMEOUT_MS = 10000; // 10 секунд бездейств�
 
 void enterDeepSleep() {
     u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_7x14_tf);
-    u8g2.drawStr(22, 36, "Deep Sleep...");
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(14, 28, "Deep Sleep...");
+    u8g2.drawStr(4, 44, "Press Center to wake");
     u8g2.sendBuffer();
-    delay(500);
+
+    // Ждем, пока пользователь отпустит кнопку MENU, чтобы избежать мгновенного пробуждения
+    while (digitalRead(PIN_BTN_MENU) == LOW) {
+        delay(10);
+    }
+    delay(300);
     u8g2.setPowerSave(1);
 
-    // Пробуждение по кнопке MENU (GPIO 7) или кнопке CENTER (GPIO 3)
-    esp_deep_sleep_enable_gpio_wakeup((1ULL << PIN_BTN_MENU) | (1ULL << PIN_BTN_CENTER), ESP_GPIO_WAKEUP_GPIO_LOW);
+    // На ESP32-C3 пробуждение из Deep Sleep поддерживается ТОЛЬКО на RTC GPIO: 0, 1, 2, 3, 4, 5.
+    // Пин MENU (GPIO 7) не является RTC-пином, поэтому пробуждаем по кнопкам:
+    // CENTER (GPIO 3), UP (GPIO 4), DOWN (GPIO 2), LEFT (GPIO 0), RIGHT (GPIO 1).
+    gpio_pullup_en((gpio_num_t)PIN_BTN_CENTER);
+    gpio_pullup_en((gpio_num_t)PIN_BTN_UP);
+    gpio_pullup_en((gpio_num_t)PIN_BTN_DOWN);
+    gpio_pullup_en((gpio_num_t)PIN_BTN_LEFT);
+    gpio_pullup_en((gpio_num_t)PIN_BTN_RIGHT);
+
+    const uint64_t WAKEUP_RTC_MASK = (1ULL << PIN_BTN_CENTER) |
+                                     (1ULL << PIN_BTN_UP) |
+                                     (1ULL << PIN_BTN_DOWN) |
+                                     (1ULL << PIN_BTN_LEFT) |
+                                     (1ULL << PIN_BTN_RIGHT);
+
+    esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(WAKEUP_RTC_MASK, ESP_GPIO_WAKEUP_GPIO_LOW);
+    Serial.printf("[SLEEP] esp_deep_sleep_enable_gpio_wakeup: %d\n", err);
     Serial.println("Entering Deep Sleep...");
     esp_deep_sleep_start();
 }
@@ -683,6 +704,7 @@ struct BtnTracker {
     bool longFired = false;
     uint32_t lastRepeatMs = 0;
     bool repeatFired = false;
+    bool wakeIgnored = false;
 };
 
 BtnTracker btns[6] = {
@@ -798,16 +820,23 @@ void pollButtons() {
             btns[i].lastRepeatMs = now;
 
             if (isDisplaySleeping) {
-                // Первое нажатие при спящем экране только будит его
+                // Первое нажатие при спящем экране ТОЛЬКО включает экран, действие кнопки НЕ выполняется!
                 isDisplaySleeping = false;
                 u8g2.setPowerSave(0);
                 lastActivityMs = now;
+                btns[i].wakeIgnored = true;
                 btns[i].lastLevel = lvl;
                 continue;
             }
+            btns[i].wakeIgnored = false;
             lastActivityMs = now;
         } else if (lvl == LOW) {
             lastActivityMs = now;
+            if (btns[i].wakeIgnored) {
+                // Игнорируем удержание и повтор кнопки, которая разбудила экран
+                btns[i].lastLevel = lvl;
+                continue;
+            }
             if (!btns[i].longFired && (now - btns[i].pressStartMs > 550)) {
                 btns[i].longFired = true;
                 onButtonLongPress(btns[i].pin);
@@ -819,7 +848,10 @@ void pollButtons() {
             }
         } else if (lvl == HIGH && btns[i].lastLevel == LOW) {
             lastActivityMs = now;
-            if (now - btns[i].pressStartMs > 25 && !btns[i].longFired && !btns[i].repeatFired) {
+            if (btns[i].wakeIgnored) {
+                // Кнопка отпущена: сбрасываем флаг, действие кнопки НЕ вызывается!
+                btns[i].wakeIgnored = false;
+            } else if (now - btns[i].pressStartMs > 25 && !btns[i].longFired && !btns[i].repeatFired) {
                 onButtonShortPress(btns[i].pin);
             }
         }
