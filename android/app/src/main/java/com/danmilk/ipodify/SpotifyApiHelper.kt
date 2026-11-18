@@ -9,6 +9,7 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
 import kotlin.concurrent.thread
@@ -91,8 +92,9 @@ object SpotifyApiHelper {
 
         val challenge = generateCodeChallenge(verifier)
         val scope = "playlist-read-private%20playlist-read-collaborative%20user-read-playback-state%20user-modify-playback-state%20user-library-read%20user-read-recently-played%20user-top-read%20user-follow-read"
+        val encRedirect = URLEncoder.encode(REDIRECT_URI, "UTF-8")
 
-        return "https://accounts.spotify.com/authorize?client_id=$clientId&response_type=code&redirect_uri=$REDIRECT_URI&code_challenge_method=S256&code_challenge=$challenge&scope=$scope"
+        return "https://accounts.spotify.com/authorize?client_id=$clientId&response_type=code&redirect_uri=$encRedirect&code_challenge_method=S256&code_challenge=$challenge&scope=$scope"
     }
 
     fun exchangeCodeForToken(context: Context, code: String, callback: (Boolean, String) -> Unit) {
@@ -116,7 +118,10 @@ object SpotifyApiHelper {
                 conn.readTimeout = 6000
                 conn.doOutput = true
 
-                val postParams = "client_id=$clientId&grant_type=authorization_code&code=$code&redirect_uri=$REDIRECT_URI&code_verifier=$verifier"
+                val encRedirect = URLEncoder.encode(REDIRECT_URI, "UTF-8")
+                val encCode = URLEncoder.encode(code, "UTF-8")
+                val encVerifier = URLEncoder.encode(verifier, "UTF-8")
+                val postParams = "client_id=$clientId&grant_type=authorization_code&code=$encCode&redirect_uri=$encRedirect&code_verifier=$encVerifier"
                 val writer = OutputStreamWriter(conn.outputStream)
                 writer.write(postParams)
                 writer.flush()
@@ -175,7 +180,8 @@ object SpotifyApiHelper {
                 conn.readTimeout = 6000
                 conn.doOutput = true
 
-                val postParams = "client_id=$clientId&grant_type=refresh_token&refresh_token=$refreshToken"
+                val encRefresh = URLEncoder.encode(refreshToken, "UTF-8")
+                val postParams = "client_id=$clientId&grant_type=refresh_token&refresh_token=$encRefresh"
                 val writer = OutputStreamWriter(conn.outputStream)
                 writer.write(postParams)
                 writer.flush()
