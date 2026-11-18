@@ -17,6 +17,7 @@
 #include <BLE2902.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <esp_sleep.h>
 
 // ======================= РАСПИНОВКА (ESP32-C3) ==============================
 // I2C OLED SSD1306
@@ -163,6 +164,25 @@ String otaStatusMsg = "";
 
 uint32_t lastVolCmdMs = 0;
 
+// Управление сном экрана и Deep Sleep
+bool isDisplaySleeping = false;
+uint32_t lastActivityMs = 0;
+const uint32_t SCREEN_TIMEOUT_MS = 10000; // 10 секунд бездействия
+
+void enterDeepSleep() {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_7x14_tf);
+    u8g2.drawStr(22, 36, "Deep Sleep...");
+    u8g2.sendBuffer();
+    delay(500);
+    u8g2.setPowerSave(1);
+
+    // Пробуждение по кнопке MENU (GPIO 7) или кнопке CENTER (GPIO 3)
+    esp_deep_sleep_enable_gpio_wakeup((1ULL << PIN_BTN_MENU) | (1ULL << PIN_BTN_CENTER), ESP_GPIO_WAKEUP_GPIO_LOW);
+    Serial.println("Entering Deep Sleep...");
+    esp_deep_sleep_start();
+}
+
 void sendBleCommand(const String& cmd) {
     if (state.bleConnected && pTxCharacteristic) {
         pTxCharacteristic->setValue(cmd.c_str());
@@ -190,6 +210,12 @@ void showAlphabetPopup(char c) {
 
 // Парсер входящих пакетов от Android-приложения
 void parseIncomingBlePacket(const String& raw) {
+    lastActivityMs = millis();
+    if (isDisplaySleeping) {
+        isDisplaySleeping = false;
+        u8g2.setPowerSave(0);
+    }
+
     if (raw.startsWith("OTA_START:")) {
         otaTotalBytes = raw.substring(10).toInt();
         otaWrittenBytes = 0;
@@ -718,6 +744,12 @@ void onButtonShortPress(uint8_t pin) {
 
 void onButtonLongPress(uint8_t pin) {
     if (isOtaUpdating) return;
+
+    if (pin == PIN_BTN_MENU) {
+        enterDeepSleep();
+        return;
+    }
+
     if (state.currentScreen == SCR_NOW_PLAYING) {
         if (pin == PIN_BTN_CENTER) {
             handleCenterLongPress();
@@ -755,7 +787,18 @@ void pollButtons() {
             btns[i].longFired = false;
             btns[i].repeatFired = false;
             btns[i].lastRepeatMs = now;
+
+            if (isDisplaySleeping) {
+                // Первое нажатие при спящем экране только будит его
+                isDisplaySleeping = false;
+                u8g2.setPowerSave(0);
+                lastActivityMs = now;
+                btns[i].lastLevel = lvl;
+                continue;
+            }
+            lastActivityMs = now;
         } else if (lvl == LOW) {
+            lastActivityMs = now;
             if (!btns[i].longFired && (now - btns[i].pressStartMs > 550)) {
                 btns[i].longFired = true;
                 onButtonLongPress(btns[i].pin);
@@ -766,6 +809,7 @@ void pollButtons() {
                 onButtonRepeat(btns[i].pin);
             }
         } else if (lvl == HIGH && btns[i].lastLevel == LOW) {
+            lastActivityMs = now;
             if (now - btns[i].pressStartMs > 25 && !btns[i].longFired && !btns[i].repeatFired) {
                 onButtonShortPress(btns[i].pin);
             }
@@ -1155,6 +1199,7 @@ void setup() {
     }
 
     bleMutex = xSemaphoreCreateMutex();
+    lastActivityMs = millis();
 
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     Wire.setTimeOut(50);   // Защита от зависания шины I2C при помехах
@@ -1186,6 +1231,12 @@ void loop() {
 
     uint32_t now = millis();
 
+    // Автоотключение экрана через 10 секунд бездействия
+    if (!isDisplaySleeping && !isOtaUpdating && (now - lastActivityMs >= SCREEN_TIMEOUT_MS)) {
+        isDisplaySleeping = true;
+        u8g2.setPowerSave(1);
+    }
+
     // Таймауты режимов громкости и скраббинга
     if (state.showVolumeOverlay && now > state.volumeTimeoutMs) {
         state.showVolumeOverlay = false;
@@ -1209,8 +1260,8 @@ void loop() {
         }
     }
 
-    // Отрисовка кадра ~33 FPS
-    if (now - lastFrameMs >= 30) {
+    // Отрисовка кадра ~33 FPS (только если экран не спит)
+    if (!isDisplaySleeping && (now - lastFrameMs >= 30)) {
         lastFrameMs = now;
         u8g2.clearBuffer();
         drawStatusBar();
