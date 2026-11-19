@@ -2,6 +2,8 @@ package com.danmilk.ipodify
 
 import android.content.ComponentName
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaController
@@ -10,9 +12,11 @@ import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
-import android.util.Log
-
 import android.service.notification.StatusBarNotification
+import android.util.Log
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.concurrent.thread
 
 class MediaListenerService : NotificationListenerService() {
 
@@ -29,6 +33,44 @@ class MediaListenerService : NotificationListenerService() {
     private var lastPacketSentMs = 0L
     private var lastSentTitle = ""
     private var lastSentPosSec = -1
+    private var lastArtTrackKey = ""
+
+    private fun checkAndSendAlbumArt(title: String, artist: String, albumArtUrl: String? = null, directBitmap: Bitmap? = null) {
+        val key = "$title|$artist"
+        if (key == lastArtTrackKey || title.isEmpty()) return
+        lastArtTrackKey = key
+
+        thread {
+            try {
+                var bmp = directBitmap
+                if (bmp == null && !albumArtUrl.isNullOrEmpty()) {
+                    val conn = URL(albumArtUrl).openConnection() as HttpURLConnection
+                    conn.connectTimeout = 4000
+                    conn.readTimeout = 4000
+                    if (conn.responseCode == 200) {
+                        bmp = BitmapFactory.decodeStream(conn.inputStream)
+                    }
+                    conn.disconnect()
+                }
+
+                if (bmp != null) {
+                    val xbmBytes = AlbumArtProcessor.processTo1BitXbm(bmp, 48, 48)
+                    val b64 = AlbumArtProcessor.toBase64(xbmBytes)
+                    // 384 characters encoded. Split into 2 parts of 192 bytes for reliable transmission
+                    val half = b64.length / 2
+                    val part0 = b64.substring(0, half)
+                    val part1 = b64.substring(half)
+
+                    IpodifyBleService.instance?.sendPacketToBle("ART0:$part0")
+                    Thread.sleep(40)
+                    IpodifyBleService.instance?.sendPacketToBle("ART1:$part1")
+                    Log.i(TAG, "Sent 48x48 album art to ESP32 for '$title'")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load/send album art: ${e.message}")
+            }
+        }
+    }
 
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -127,6 +169,8 @@ class MediaListenerService : NotificationListenerService() {
         // NP|play|like|shuf|rep|qIdx|qTot|pos|dur|vol|title|artist|album
         val packet = "NP|$isPlay|1|$shuf|${info.repeatState}|1|10|${info.posSec}|${info.durSec}|$volPct|${clean(info.title)}|${clean(info.artist)}|${clean(info.album)}"
         IpodifyBleService.instance?.sendPacketToBle(packet)
+
+        checkAndSendAlbumArt(info.title, info.artist, albumArtUrl = info.imageUrl)
     }
 
     fun broadcastCurrentPlayback() {
@@ -172,6 +216,9 @@ class MediaListenerService : NotificationListenerService() {
         // NP|play|like|shuf|rep|qIdx|qTot|pos|dur|vol|title|artist|album
         val packet = "NP|${if (isPlaying) 1 else 0}|1|0|0|1|10|$posSec|$durSec|$volPct|${clean(title)}|${clean(artist)}|${clean(album)}"
         IpodifyBleService.instance?.sendPacketToBle(packet)
+
+        val directBmp = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+        checkAndSendAlbumArt(title, artist, directBitmap = directBmp)
     }
 
     fun handleCommand(cmd: String) {

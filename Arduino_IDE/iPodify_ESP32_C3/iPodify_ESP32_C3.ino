@@ -68,8 +68,7 @@ struct MenuStackEntry {
 
 struct AppState {
     bool bleConnected = false;
-    int batteryPct = 95;
-    bool showBatteryPct = true;
+    int uiStyle = 1; // 0: Classic iPod, 1: Modern Split UI
     bool invertScreen = false;
     uint8_t brightnessLevel = 2; // 0: Low, 1: Med, 2: High
 
@@ -142,9 +141,45 @@ const char* EXTRAS_MENU_LABELS[] = {
 const int EXTRAS_MENU_COUNT = 5;
 
 const char* SETTINGS_MENU_LABELS[] = {
-    "About", "Shuffle", "Repeat", "Invert OLED", "Brightness", "Battery %", "Sync Library"
+    "About", "Shuffle", "Repeat", "Invert OLED", "Brightness", "UI Style", "Sync Library"
 };
 const int SETTINGS_MENU_COUNT = 7;
+
+// Буфер для монохромной обложки альбома (48x48 1-bit XBM = 288 байт)
+uint8_t albumArtBitmap[288];
+bool hasAlbumArt = false;
+String b64ArtPart0 = "";
+
+int decodeBase64(const char* input, size_t inputLen, uint8_t* output, size_t maxOut) {
+    static const int8_t b64_table[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-2,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1
+    };
+    size_t outLen = 0;
+    uint32_t val = 0;
+    int valb = -8;
+    for (size_t i = 0; i < inputLen; i++) {
+        uint8_t c = (uint8_t)input[i];
+        if (c == '=') break;
+        int8_t d = b64_table[c];
+        if (d < 0) continue;
+        val = (val << 6) | d;
+        valb += 6;
+        if (valb >= 0) {
+            if (outLen < maxOut) {
+                output[outLen++] = (uint8_t)((val >> valb) & 0xFF);
+            }
+            valb -= 8;
+        }
+    }
+    return outLen;
+}
 
 // ======================= BLE И OTA СЕРВЕР ===================================
 BLEServer* pServer = nullptr;
@@ -307,9 +342,28 @@ void parseIncomingBlePacket(const String& raw) {
         }
         state.durationSec = raw.substring(idx[7] + 1, idx[8]).toInt();
         state.volumePct   = raw.substring(idx[8] + 1, idx[9]).toInt();
-        state.trackTitle  = raw.substring(idx[9] + 1, idx[10]);
+        String newTitle = raw.substring(idx[9] + 1, idx[10]);
+        if (newTitle != state.trackTitle) {
+            hasAlbumArt = false;
+            b64ArtPart0 = "";
+        }
+        state.trackTitle  = newTitle;
         state.trackArtist = raw.substring(idx[10] + 1, idx[11]);
         state.trackAlbum  = raw.substring(idx[11] + 1);
+    } else if (raw.startsWith("ART0:")) {
+        b64ArtPart0 = raw.substring(5);
+    } else if (raw.startsWith("ART1:")) {
+        String fullB64 = b64ArtPart0 + raw.substring(5);
+        int decoded = decodeBase64(fullB64.c_str(), fullB64.length(), albumArtBitmap, sizeof(albumArtBitmap));
+        if (decoded == 288) {
+            hasAlbumArt = true;
+        }
+    } else if (raw.startsWith("ART:")) {
+        String b64 = raw.substring(4);
+        int decoded = decodeBase64(b64.c_str(), b64.length(), albumArtBitmap, sizeof(albumArtBitmap));
+        if (decoded == 288) {
+            hasAlbumArt = true;
+        }
     } else if (raw.startsWith("MN|")) {
         // Формат: MN|folderId|offset|Item1|Item2|...
         int p1 = raw.indexOf('|', 3);
@@ -667,7 +721,8 @@ void handleCenterShortPress() {
                 break;
             }
             case 5:
-                state.showBatteryPct = !state.showBatteryPct;
+                state.uiStyle = (state.uiStyle == 1) ? 0 : 1;
+                showToast(state.uiStyle == 1 ? "UI: Modern" : "UI: Classic");
                 break;
             case 6:
                 sendBleCommand("CMD:SYNC");
@@ -869,42 +924,43 @@ String formatSec(int totalSec) {
     return String(buf);
 }
 
+void drawBluetoothIcon(int x, int y) {
+    // Четкая пиксельная руна Bluetooth 7x9
+    u8g2.drawVLine(x + 3, y, 9);
+    u8g2.drawLine(x + 3, y, x + 6, y + 2);
+    u8g2.drawLine(x + 6, y + 2, x + 1, y + 5);
+    u8g2.drawLine(x + 1, y + 3, x + 6, y + 6);
+    u8g2.drawLine(x + 6, y + 6, x + 3, y + 8);
+}
+
 void drawStatusBar() {
     u8g2.setDrawColor(1);
     u8g2.setFont(u8g2_font_6x10_tf);
 
     // Заголовок слева
     String title = state.currentMenuTitle;
-    if (title.length() > 11) title = title.substring(0, 11);
+    if (title.length() > 14) title = title.substring(0, 14);
     u8g2.drawUTF8(2, 9, title.c_str());
-
-    // Статус BLE
-    if (state.bleConnected) {
-        u8g2.drawStr(72, 9, "B");
-    }
 
     // Иконка Play / Pause
     if (state.isPlaying) {
-        u8g2.drawTriangle(82, 2, 82, 8, 87, 5);
+        u8g2.drawTriangle(107, 2, 107, 8, 112, 5);
     } else {
-        u8g2.drawBox(82, 2, 2, 7);
-        u8g2.drawBox(86, 2, 2, 7);
+        u8g2.drawBox(107, 2, 2, 7);
+        u8g2.drawBox(111, 2, 2, 7);
     }
 
-    // Процент заряда и батарейка
-    if (state.showBatteryPct) {
-        u8g2.setFont(u8g2_font_5x7_tf);
-        char bStr[6];
-        snprintf(bStr, sizeof(bStr), "%d%%", state.batteryPct);
-        u8g2.drawStr(91, 8, bStr);
+    // Иконка Bluetooth (настоящая руна BT вместо буквы "B")
+    if (state.bleConnected) {
+        drawBluetoothIcon(118, 1);
     }
 
-    u8g2.drawFrame(112, 2, 13, 7);
-    u8g2.drawBox(125, 4, 2, 3);
-    int fillW = map(constrain(state.batteryPct, 0, 100), 0, 100, 1, 9);
-    u8g2.drawBox(114, 4, fillW, 3);
-
-    u8g2.drawHLine(0, 11, 128);
+    // Разделительная линия статус-бара
+    if (state.uiStyle == 1) {
+        u8g2.drawHLine(2, 11, 124);
+    } else {
+        u8g2.drawHLine(0, 11, 128);
+    }
 }
 
 String getRightValueForItem(int idx) {
@@ -917,7 +973,7 @@ String getRightValueForItem(int idx) {
             case 2: return state.repeatMode == 0 ? "Off" : (state.repeatMode == 1 ? "All" : "One");
             case 3: return state.invertScreen ? "On" : "Off";
             case 4: return state.brightnessLevel == 0 ? "Low" : (state.brightnessLevel == 1 ? "Med" : "Max");
-            case 5: return state.showBatteryPct ? "On" : "Off";
+            case 5: return state.uiStyle == 1 ? "Modern" : "Classic";
             default: return "";
         }
     }
@@ -941,106 +997,222 @@ void drawMenuScreen() {
         int yTop = 13 + r * 12;
         bool isSelected = (itemIdx == state.selectedIdx);
 
-        if (isSelected) {
-            u8g2.setDrawColor(1);
-            u8g2.drawBox(0, yTop, total > visibleRows ? 121 : 128, 12);
-            u8g2.setDrawColor(0);
+        if (state.uiStyle == 1) {
+            // Современное меню: скругленные аккуратные плашки (Pills)
+            if (isSelected) {
+                u8g2.setDrawColor(1);
+                u8g2.drawRBox(1, yTop, total > visibleRows ? 119 : 126, 12, 3);
+                u8g2.setDrawColor(0);
+            } else {
+                u8g2.setDrawColor(1);
+            }
+
+            String label = getCurrentMenuItemLabel(itemIdx);
+            if (label.length() > 15) label = label.substring(0, 15);
+            u8g2.drawUTF8(4, yTop + 10, label.c_str());
+
+            String rightVal = getRightValueForItem(itemIdx);
+            if (rightVal.length() > 0) {
+                int rw = u8g2.getUTF8Width(rightVal.c_str());
+                int rightEdge = (total > visibleRows) ? 116 : 122;
+                u8g2.drawUTF8(rightEdge - rw, yTop + 10, rightVal.c_str());
+            }
         } else {
-            u8g2.setDrawColor(1);
-        }
+            // Классическое меню iPod
+            if (isSelected) {
+                u8g2.setDrawColor(1);
+                u8g2.drawBox(0, yTop, total > visibleRows ? 121 : 128, 12);
+                u8g2.setDrawColor(0);
+            } else {
+                u8g2.setDrawColor(1);
+            }
 
-        String label = getCurrentMenuItemLabel(itemIdx);
-        if (label.length() > 16) label = label.substring(0, 16);
-        u8g2.drawUTF8(3, yTop + 10, label.c_str());
+            String label = getCurrentMenuItemLabel(itemIdx);
+            if (label.length() > 16) label = label.substring(0, 16);
+            u8g2.drawUTF8(3, yTop + 10, label.c_str());
 
-        String rightVal = getRightValueForItem(itemIdx);
-        if (rightVal.length() > 0) {
-            int rw = u8g2.getUTF8Width(rightVal.c_str());
-            int rightEdge = (total > visibleRows) ? 119 : 125;
-            u8g2.drawUTF8(rightEdge - rw, yTop + 10, rightVal.c_str());
+            String rightVal = getRightValueForItem(itemIdx);
+            if (rightVal.length() > 0) {
+                int rw = u8g2.getUTF8Width(rightVal.c_str());
+                int rightEdge = (total > visibleRows) ? 119 : 125;
+                u8g2.drawUTF8(rightEdge - rw, yTop + 10, rightVal.c_str());
+            }
         }
     }
 
-    // Скроллбар iPod справа
+    // Скроллбар справа
     u8g2.setDrawColor(1);
     if (total > visibleRows) {
-        u8g2.drawFrame(123, 13, 5, 50);
-        int thumbH = max(8, (visibleRows * 48) / total);
-        int maxTop = 48 - thumbH;
-        int thumbY = 14 + (state.selectedIdx * maxTop) / max(1, total - 1);
-        u8g2.drawBox(124, thumbY, 3, thumbH);
+        if (state.uiStyle == 1) {
+            int thumbH = max(6, (visibleRows * 48) / total);
+            int maxTop = 48 - thumbH;
+            int thumbY = 14 + (state.selectedIdx * maxTop) / max(1, total - 1);
+            u8g2.drawRBox(124, thumbY, 3, thumbH, 1);
+        } else {
+            u8g2.drawFrame(123, 13, 5, 50);
+            int thumbH = max(8, (visibleRows * 48) / total);
+            int maxTop = 48 - thumbH;
+            int thumbY = 14 + (state.selectedIdx * maxTop) / max(1, total - 1);
+            u8g2.drawBox(124, thumbY, 3, thumbH);
+        }
     }
 }
 
 void drawNowPlayingScreen() {
     u8g2.setDrawColor(1);
-    u8g2.setFont(u8g2_font_5x8_tf);
 
-    // 1. Верхняя мета-строка: ♥ 1 of 42  |  [Scrub] / Shuf / Rep
-    String idxStr = String(state.queueIdx) + " of " + String(state.queueTotal);
-    int leftX = 2;
-    if (state.isLiked) {
-        u8g2.drawGlyph(2, 21, 0x2665); // Сердечко (или символ)
-        u8g2.drawBox(2, 16, 5, 4);
-        leftX = 10;
-    }
-    u8g2.drawStr(leftX, 21, idxStr.c_str());
+    if (state.uiStyle == 1) {
+        // ================= СОВРЕМЕННЫЙ UI (SPLIT VIEW) =================
+        // ЛЕВАЯ ПОЛОВИНА (x=1..51, y=13..63): ОБЛОЖКА АЛЬБОМА
+        u8g2.drawRFrame(1, 13, 50, 50, 2);
 
-    if (state.isScrubbing) {
-        u8g2.drawStr(88, 21, "[Scrub]");
-    } else {
-        String modes = "";
-        if (state.shuffle) modes += "SHF ";
-        if (state.repeatMode == 1) modes += "R:ALL";
-        else if (state.repeatMode == 2) modes += "R:1";
-        u8g2.drawStr(126 - u8g2.getStrWidth(modes.c_str()), 21, modes.c_str());
-    }
-
-    // 2. Название трека (с плавной бегущей строкой, если длинное)
-    u8g2.setFont(u8g2_font_6x12_t_cyrillic);
-    int titleW = u8g2.getUTF8Width(state.trackTitle.c_str());
-    if (titleW <= 124) {
-        u8g2.drawUTF8((128 - titleW) / 2, 34, state.trackTitle.c_str());
-    } else {
-        int scrollRange = titleW - 116;
-        int offset = (millis() / 45) % (scrollRange + 30);
-        int drawX = 4 - constrain(offset - 10, 0, scrollRange);
-        u8g2.drawUTF8(drawX, 34, state.trackTitle.c_str());
-    }
-
-    // 3. Исполнитель
-    u8g2.setFont(u8g2_font_5x8_t_cyrillic);
-    String artist = state.trackArtist;
-    if (artist.length() > 24) artist = artist.substring(0, 24);
-    int artW = u8g2.getUTF8Width(artist.c_str());
-    u8g2.drawUTF8(max(2, (128 - artW) / 2), 45, artist.c_str());
-
-    // 4. Нижняя зона: Громкость ИЛИ Прогресс-бар / Scrubbing
-    if (state.showVolumeOverlay) {
-        u8g2.drawStr(4, 58, "VOL");
-        u8g2.drawFrame(24, 52, 82, 7);
-        int vw = map(state.volumePct, 0, 100, 0, 78);
-        u8g2.drawBox(26, 54, vw, 3);
-        char vBuf[8];
-        snprintf(vBuf, sizeof(vBuf), "%d%%", state.volumePct);
-        u8g2.drawStr(109, 58, vBuf);
-    } else {
-        int activePos = state.isScrubbing ? state.scrubPositionSec : state.positionSec;
-        int pct = state.durationSec > 0 ? constrain((activePos * 100) / state.durationSec, 0, 100) : 0;
-
-        u8g2.drawFrame(4, 49, 120, 6);
-        if (state.isScrubbing) {
-            int diamondX = 6 + map(pct, 0, 100, 0, 114);
-            u8g2.drawBox(diamondX - 2, 48, 5, 8);
+        if (hasAlbumArt) {
+            u8g2.drawXBM(2, 14, 48, 48, albumArtBitmap);
         } else {
-            int pw = map(pct, 0, 100, 0, 116);
-            u8g2.drawBox(6, 51, pw, 2);
+            // Стильный винил при отсутствии обложки
+            u8g2.drawCircle(26, 38, 20);
+            u8g2.drawCircle(26, 38, 14);
+            u8g2.drawCircle(26, 38, 8);
+            u8g2.drawDisc(26, 38, 4);
+            u8g2.setDrawColor(0);
+            u8g2.drawDisc(26, 38, 1);
+            u8g2.setDrawColor(1);
         }
 
+        // ПРАВАЯ ПОЛОВИНА (x=54..127, y=13..63): ИНФОРМАЦИЯ О ТРЕКЕ
+        if (state.showVolumeOverlay) {
+            u8g2.drawRFrame(53, 16, 74, 44, 3);
+            u8g2.setFont(u8g2_font_5x8_tf);
+            u8g2.drawStr(60, 27, "VOLUME");
+            char vBuf[8];
+            snprintf(vBuf, sizeof(vBuf), "%d%%", state.volumePct);
+            u8g2.drawStr(103, 27, vBuf);
+            u8g2.drawRFrame(59, 33, 62, 6, 1);
+            int vw = map(state.volumePct, 0, 100, 0, 58);
+            if (vw > 0) u8g2.drawRBox(61, 35, vw, 2, 1);
+            return;
+        }
+
+        // 1. Название трека с плавной бегущей строкой в пределах правого блока
+        u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+        int titleW = u8g2.getUTF8Width(state.trackTitle.c_str());
+        u8g2.setClipWindow(54, 12, 127, 26);
+        if (titleW <= 73) {
+            u8g2.drawUTF8(54, 24, state.trackTitle.c_str());
+        } else {
+            int scrollRange = titleW - 68;
+            int offset = (millis() / 50) % (scrollRange + 25);
+            int drawX = 54 - constrain(offset - 8, 0, scrollRange);
+            u8g2.drawUTF8(drawX, 24, state.trackTitle.c_str());
+        }
+        u8g2.setMaxClipWindow();
+
+        // 2. Исполнитель (с бегущей строкой)
+        u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+        int artW = u8g2.getUTF8Width(state.trackArtist.c_str());
+        u8g2.setClipWindow(54, 26, 127, 37);
+        if (artW <= 73) {
+            u8g2.drawUTF8(54, 35, state.trackArtist.c_str());
+        } else {
+            int scrollRange = artW - 68;
+            int offset = (millis() / 55) % (scrollRange + 20);
+            int drawX = 54 - constrain(offset - 6, 0, scrollRange);
+            u8g2.drawUTF8(drawX, 35, state.trackArtist.c_str());
+        }
+        u8g2.setMaxClipWindow();
+
+        // 3. Современный прогресс-бар
+        int activePos = state.isScrubbing ? state.scrubPositionSec : state.positionSec;
+        int pct = state.durationSec > 0 ? constrain((activePos * 100) / state.durationSec, 0, 100) : 0;
+        int barW = 72;
+        u8g2.drawRFrame(54, 41, barW, 4, 1);
+        int pw = map(pct, 0, 100, 0, barW - 2);
+        if (pw > 0) u8g2.drawRBox(55, 42, pw, 2, 1);
+        if (state.isScrubbing) {
+            u8g2.drawBox(54 + pw - 1, 40, 3, 6);
+        }
+
+        // 4. Время: текущее / общая длительность
+        u8g2.setFont(u8g2_font_4x6_tf);
         String curT = formatSec(activePos);
-        String remT = "-" + formatSec(max(0, state.durationSec - activePos));
-        u8g2.drawStr(4, 63, curT.c_str());
-        u8g2.drawStr(124 - u8g2.getStrWidth(remT.c_str()), 63, remT.c_str());
+        String totT = formatSec(state.durationSec);
+        u8g2.drawStr(54, 52, curT.c_str());
+        u8g2.drawStr(127 - u8g2.getStrWidth(totT.c_str()), 52, totT.c_str());
+
+        // 5. Мета-строка внизу (номер в очереди + значки shuffle / repeat / like)
+        String meta = String(state.queueIdx) + "/" + String(state.queueTotal);
+        if (state.isLiked) meta += " [L]";
+        if (state.shuffle) meta += " [S]";
+        if (state.repeatMode == 1) meta += " [RA]";
+        else if (state.repeatMode == 2) meta += " [R1]";
+        if (state.isScrubbing) meta = "[SEEK]";
+        u8g2.drawStr(54, 62, meta.c_str());
+
+    } else {
+        // ================= КЛАССИЧЕСКИЙ IPOD UI =================
+        u8g2.setFont(u8g2_font_5x8_tf);
+        String idxStr = String(state.queueIdx) + " of " + String(state.queueTotal);
+        int leftX = 2;
+        if (state.isLiked) {
+            u8g2.drawGlyph(2, 21, 0x2665);
+            u8g2.drawBox(2, 16, 5, 4);
+            leftX = 10;
+        }
+        u8g2.drawStr(leftX, 21, idxStr.c_str());
+
+        if (state.isScrubbing) {
+            u8g2.drawStr(88, 21, "[Scrub]");
+        } else {
+            String modes = "";
+            if (state.shuffle) modes += "SHF ";
+            if (state.repeatMode == 1) modes += "R:ALL";
+            else if (state.repeatMode == 2) modes += "R:1";
+            u8g2.drawStr(126 - u8g2.getStrWidth(modes.c_str()), 21, modes.c_str());
+        }
+
+        u8g2.setFont(u8g2_font_6x12_t_cyrillic);
+        int titleW = u8g2.getUTF8Width(state.trackTitle.c_str());
+        if (titleW <= 124) {
+            u8g2.drawUTF8((128 - titleW) / 2, 34, state.trackTitle.c_str());
+        } else {
+            int scrollRange = titleW - 116;
+            int offset = (millis() / 45) % (scrollRange + 30);
+            int drawX = 4 - constrain(offset - 10, 0, scrollRange);
+            u8g2.drawUTF8(drawX, 34, state.trackTitle.c_str());
+        }
+
+        u8g2.setFont(u8g2_font_5x8_t_cyrillic);
+        String artist = state.trackArtist;
+        if (artist.length() > 24) artist = artist.substring(0, 24);
+        int artW = u8g2.getUTF8Width(artist.c_str());
+        u8g2.drawUTF8(max(2, (128 - artW) / 2), 45, artist.c_str());
+
+        if (state.showVolumeOverlay) {
+            u8g2.drawStr(4, 58, "VOL");
+            u8g2.drawFrame(24, 52, 82, 7);
+            int vw = map(state.volumePct, 0, 100, 0, 78);
+            u8g2.drawBox(26, 54, vw, 3);
+            char vBuf[8];
+            snprintf(vBuf, sizeof(vBuf), "%d%%", state.volumePct);
+            u8g2.drawStr(109, 58, vBuf);
+        } else {
+            int activePos = state.isScrubbing ? state.scrubPositionSec : state.positionSec;
+            int pct = state.durationSec > 0 ? constrain((activePos * 100) / state.durationSec, 0, 100) : 0;
+
+            u8g2.drawFrame(4, 49, 120, 6);
+            if (state.isScrubbing) {
+                int diamondX = 6 + map(pct, 0, 100, 0, 114);
+                u8g2.drawBox(diamondX - 2, 48, 5, 8);
+            } else {
+                int pw = map(pct, 0, 100, 0, 116);
+                u8g2.drawBox(6, 51, pw, 2);
+            }
+
+            String curT = formatSec(activePos);
+            String remT = "-" + formatSec(max(0, state.durationSec - activePos));
+            u8g2.drawStr(4, 63, curT.c_str());
+            u8g2.drawStr(124 - u8g2.getStrWidth(remT.c_str()), 63, remT.c_str());
+        }
     }
 }
 

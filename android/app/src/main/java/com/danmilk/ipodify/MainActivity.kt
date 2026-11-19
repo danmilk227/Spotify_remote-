@@ -153,6 +153,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("start_ota", false) == true) {
+            Handler(Looper.getMainLooper()).postDelayed({ startOtaWorkflow() }, 1500)
+        }
+
         val data = intent?.data ?: return
         if (data.scheme == "ipodify" && data.host == "callback") {
             val code = data.getQueryParameter("code")
@@ -201,7 +205,21 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 var firmwareBytes: ByteArray? = null
-                for (urlStr in firmwareUrls) {
+
+                // 1. Проверяем локальный файл в Downloads
+                try {
+                    val downloadFw = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "firmware.bin")
+                    if (downloadFw.exists() && downloadFw.length() > 50000) {
+                        firmwareBytes = downloadFw.readBytes()
+                        Log.i(TAG, "Using local firmware.bin from Downloads (${firmwareBytes.size} bytes)")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Local fw check: ${e.message}")
+                }
+
+                // 2. Если локального нет, скачиваем с GitHub
+                if (firmwareBytes == null) {
+                    for (urlStr in firmwareUrls) {
                     try {
                         val url = URL(urlStr)
                         val conn = url.openConnection() as HttpURLConnection

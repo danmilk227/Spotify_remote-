@@ -30,7 +30,8 @@ object SpotifyApiHelper {
         val durSec: Int,
         val volumePct: Int,
         val isShuffled: Boolean,
-        val repeatState: Int // 0: off, 1: context, 2: track
+        val repeatState: Int, // 0: off, 1: context, 2: track
+        val imageUrl: String? = null
     )
 
     fun getClientId(context: Context): String {
@@ -330,6 +331,12 @@ object SpotifyApiHelper {
                             artistsArr.getJSONObject(0).optString("name", "Unknown Artist")
                         } else ""
 
+                        val imagesArr = albumObj?.optJSONArray("images")
+                        val imgUrl = if (imagesArr != null && imagesArr.length() > 0) {
+                            val idx = if (imagesArr.length() > 1) 1 else 0
+                            imagesArr.getJSONObject(idx).optString("url", "")
+                        } else null
+
                         val info = PlaybackStateInfo(
                             isPlaying = isPlaying,
                             title = title,
@@ -339,7 +346,8 @@ object SpotifyApiHelper {
                             durSec = (durMs / 1000).toInt().coerceAtLeast(1),
                             volumePct = volPct,
                             isShuffled = shuffleState,
-                            repeatState = repMode
+                            repeatState = repMode,
+                            imageUrl = imgUrl
                         )
                         callback(info)
                         return@apiRequest
