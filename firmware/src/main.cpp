@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ============================================================================
  * iPodify Physical Remote v2.0 (iPod Classic Edition - 6 Buttons)
  * MCU: ESP32-C3 (4MB Flash) | Display: SSD1306 0.96" I2C (128x64)
@@ -51,6 +51,8 @@ enum ScreenId {
     SCR_ABOUT,
     SCR_CLOCK,
     SCR_STOPWATCH,
+    SCR_FLASHLIGHT,
+    SCR_EQUALIZER,
     SCR_GAME_BRICK,
     SCR_GAME_SNAKE,
     SCR_OTA
@@ -70,7 +72,9 @@ struct AppState {
     bool bleConnected = false;
     int uiStyle = 1; // 0: Classic iPod, 1: Modern Split UI
     bool invertScreen = false;
-    uint8_t brightnessLevel = 2; // 0: Low, 1: Med, 2: High
+    uint8_t brightnessLevel = 2; // 0: 25%, 1: 50%, 2: 75%, 3: 100%
+    bool visualizerEnabled = true;
+    int sleepTimeoutSeconds = 10; // 5, 10, 30, 0 (Never)
 
     // Playback state
     bool isPlaying = true;
@@ -130,20 +134,31 @@ const char* DEMO_SONGS[]     = {
 
 const char* MAIN_MENU_LABELS[] = {
     "Playlists", "Artists", "Albums", "Songs",
-    "Top Tracks", "Recently Played", "Extras",
+    "Queue", "Recently Played", "Extras",
     "Settings", "Shuffle Songs", "Now Playing"
 };
 const int MAIN_MENU_COUNT = 10;
 
 const char* EXTRAS_MENU_LABELS[] = {
-    "Clock", "Stopwatch", "Brick (Breakout)", "Snake (Retro)", "Sleep Timer"
+    "Clock", "Stopwatch", "Flashlight", "Equalizer", "Brick (Breakout)", "Snake (Retro)", "Sleep Timer"
 };
-const int EXTRAS_MENU_COUNT = 5;
+const int EXTRAS_MENU_COUNT = 7;
 
 const char* SETTINGS_MENU_LABELS[] = {
-    "About", "Shuffle", "Repeat", "Invert OLED", "Brightness", "UI Style", "Sync Library"
+    "About", "UI Style", "Screen Sleep", "Brightness", "Visualizer", "Shuffle", "Repeat", "Deep Sleep Now"
 };
-const int SETTINGS_MENU_COUNT = 7;
+const int SETTINGS_MENU_COUNT = 8;
+
+const char* EQ_PRESET_NAMES[] = {"Flat", "Bass Boost", "Acoustic", "Rock", "Electronic", "Vocal"};
+const int8_t EQ_CURVES[6][5] = {
+    {0, 0, 0, 0, 0},
+    {6, 5, 2, 0, -1},
+    {3, 2, 0, 2, 4},
+    {5, 2, -1, 3, 5},
+    {5, 4, 0, 2, 4},
+    {-2, 0, 4, 3, 1}
+};
+int eqPresetIdx = 0;
 
 // Буфер для монохромной обложки альбома (48x48 1-bit XBM = 288 байт)
 uint8_t albumArtBitmap[288];
@@ -524,10 +539,17 @@ void pushScreen(ScreenId nextScr, const String& folderId, const String& title) {
     state.currentFolderId = folderId;
     state.currentMenuTitle = title;
     state.selectedIdx = 0;
+    if (nextScr == SCR_FLASHLIGHT) {
+        u8g2.setContrast(255);
+    }
 }
 
 void popScreen() {
     if (isOtaUpdating) return;
+    if (state.currentScreen == SCR_FLASHLIGHT) {
+        const uint8_t contrasts[] = {25, 80, 160, 255};
+        u8g2.setContrast(contrasts[state.brightnessLevel]);
+    }
     if (state.currentScreen == SCR_NOW_PLAYING && state.isScrubbing) {
         state.isScrubbing = false;
         return;
@@ -538,6 +560,9 @@ void popScreen() {
         state.currentFolderId = prev.folderId;
         state.currentMenuTitle = prev.title;
         state.selectedIdx = prev.selectedIdx;
+        if (state.currentScreen == SCR_MENU_DYNAMIC && state.bleConnected) {
+            sendBleCommand("GET:" + state.currentFolderId + ":0");
+        }
     }
 }
 
@@ -545,15 +570,16 @@ void loadDynamicFolder(const String& folderId, const String& title) {
     pushScreen(SCR_MENU_DYNAMIC, folderId, title);
     dynamicCount = 0;
 
-    // Сразу заполняем дефолтными списками — экран НИКОГДА не застрянет на "Loading..."
     if (folderId == "playlists") {
         for (auto s : DEMO_PLAYLISTS) dynamicItems[dynamicCount++] = s;
     } else if (folderId == "artists") {
         for (auto s : DEMO_ARTISTS) dynamicItems[dynamicCount++] = s;
     } else if (folderId == "albums") {
         for (auto s : DEMO_ALBUMS) dynamicItems[dynamicCount++] = s;
-    } else {
+    } else if (folderId == "songs" || folderId == "top" || folderId == "recent" || folderId == "queue") {
         for (auto s : DEMO_SONGS) dynamicItems[dynamicCount++] = s;
+    } else {
+        dynamicItems[dynamicCount++] = "Loading tracks...";
     }
 
     if (state.bleConnected) {
@@ -587,6 +613,15 @@ void commitScrub() {
 
 // Обработка навигации кнопками ВВЕРХ / ВНИЗ
 void handleNavScroll(int dir) {
+    if (state.currentScreen == SCR_FLASHLIGHT) {
+        popScreen();
+        return;
+    }
+    if (state.currentScreen == SCR_EQUALIZER) {
+        eqPresetIdx = (eqPresetIdx + dir + 6) % 6;
+        sendBleCommand("CMD:EQ:" + String(eqPresetIdx));
+        return;
+    }
     if (state.currentScreen == SCR_GAME_BRICK) {
         brick.paddleX = constrain(brick.paddleX + dir * 8, 2, 126 - brick.paddleW);
         return;
@@ -631,6 +666,17 @@ void handleNavScroll(int dir) {
 }
 
 void handleCenterShortPress() {
+    if (state.currentScreen == SCR_FLASHLIGHT) {
+        popScreen();
+        return;
+    }
+
+    if (state.currentScreen == SCR_EQUALIZER) {
+        showToast(EQ_PRESET_NAMES[eqPresetIdx]);
+        popScreen();
+        return;
+    }
+
     if (state.currentScreen == SCR_STOPWATCH) {
         if (!sw.running) {
             sw.startMs = millis();
@@ -663,7 +709,7 @@ void handleCenterShortPress() {
             case 1: loadDynamicFolder("artists", "Artists"); break;
             case 2: loadDynamicFolder("albums", "Albums"); break;
             case 3: loadDynamicFolder("songs", "Songs"); break;
-            case 4: loadDynamicFolder("top", "Top Tracks"); break;
+            case 4: loadDynamicFolder("queue", "Queue"); break;
             case 5: loadDynamicFolder("recent", "Recent"); break;
             case 6: pushScreen(SCR_MENU_EXTRAS, "extras", "Extras"); break;
             case 7: pushScreen(SCR_MENU_SETTINGS, "settings", "Settings"); break;
@@ -684,15 +730,18 @@ void handleCenterShortPress() {
         switch (state.selectedIdx) {
             case 0: pushScreen(SCR_CLOCK, "clock", "Clock"); break;
             case 1: pushScreen(SCR_STOPWATCH, "sw", "Stopwatch"); break;
-            case 2: brick.reset(); pushScreen(SCR_GAME_BRICK, "brick", "Brick"); break;
-            case 3: snake.reset(); pushScreen(SCR_GAME_SNAKE, "snake", "Snake"); break;
-            case 4: {
-                const int opts[] = {0, 15, 30, 60};
+            case 2: pushScreen(SCR_FLASHLIGHT, "flash", "Flashlight"); break;
+            case 3: pushScreen(SCR_EQUALIZER, "eq", "Equalizer"); break;
+            case 4: brick.reset(); pushScreen(SCR_GAME_BRICK, "brick", "Brick"); break;
+            case 5: snake.reset(); pushScreen(SCR_GAME_SNAKE, "snake", "Snake"); break;
+            case 6: {
+                const int opts[] = {0, 15, 30, 45, 60, 90};
                 int next = 0;
-                for (int i = 0; i < 4; i++) if (opts[i] == state.sleepMinutes) next = opts[(i + 1) % 4];
+                for (int i = 0; i < 6; i++) if (opts[i] == state.sleepMinutes) next = opts[(i + 1) % 6];
                 state.sleepMinutes = next;
                 state.sleepStartMs = millis();
                 sendBleCommand("CMD:SLEEP:" + String(state.sleepMinutes));
+                showToast(state.sleepMinutes == 0 ? "Sleep Timer: Off" : ("Sleep in " + String(state.sleepMinutes) + "m"));
                 break;
             }
         }
@@ -703,30 +752,40 @@ void handleCenterShortPress() {
         switch (state.selectedIdx) {
             case 0: pushScreen(SCR_ABOUT, "about", "About"); break;
             case 1:
-                state.shuffle = !state.shuffle;
-                sendBleCommand("CMD:SHUFFLE:" + String(state.shuffle ? 1 : 0));
-                break;
-            case 2:
-                state.repeatMode = (state.repeatMode + 1) % 3;
-                sendBleCommand("CMD:REPEAT:" + String(state.repeatMode));
-                break;
-            case 3:
-                state.invertScreen = !state.invertScreen;
-                u8g2.sendF("c", state.invertScreen ? 0xA7 : 0xA6);
-                break;
-            case 4: {
-                state.brightnessLevel = (state.brightnessLevel + 1) % 3;
-                const uint8_t contrasts[] = {15, 110, 255};
-                u8g2.setContrast(contrasts[state.brightnessLevel]);
-                break;
-            }
-            case 5:
                 state.uiStyle = (state.uiStyle == 1) ? 0 : 1;
                 showToast(state.uiStyle == 1 ? "UI: Modern" : "UI: Classic");
                 break;
+            case 2: {
+                const int timeouts[] = {5, 10, 30, 0};
+                int cur = 0;
+                for (int i = 0; i < 4; i++) if (timeouts[i] == state.sleepTimeoutSeconds) cur = i;
+                state.sleepTimeoutSeconds = timeouts[(cur + 1) % 4];
+                showToast(state.sleepTimeoutSeconds == 0 ? "Sleep: Never" : ("Sleep: " + String(state.sleepTimeoutSeconds) + "s"));
+                break;
+            }
+            case 3: {
+                state.brightnessLevel = (state.brightnessLevel + 1) % 4;
+                const uint8_t contrasts[] = {25, 80, 160, 255};
+                u8g2.setContrast(contrasts[state.brightnessLevel]);
+                showToast(state.brightnessLevel == 0 ? "Bright: 25%" : (state.brightnessLevel == 1 ? "Bright: 50%" : (state.brightnessLevel == 2 ? "Bright: 75%" : "Bright: 100%")));
+                break;
+            }
+            case 4:
+                state.visualizerEnabled = !state.visualizerEnabled;
+                showToast(state.visualizerEnabled ? "Visualizer: On" : "Visualizer: Off");
+                break;
+            case 5:
+                state.shuffle = !state.shuffle;
+                sendBleCommand("CMD:SHUFFLE:" + String(state.shuffle ? 1 : 0));
+                showToast(state.shuffle ? "Shuffle: On" : "Shuffle: Off");
+                break;
             case 6:
-                sendBleCommand("CMD:SYNC");
-                showToast("Syncing Library...");
+                state.repeatMode = (state.repeatMode + 1) % 3;
+                sendBleCommand("CMD:REPEAT:" + String(state.repeatMode));
+                showToast(state.repeatMode == 0 ? "Repeat: Off" : (state.repeatMode == 1 ? "Repeat: All" : "Repeat: One"));
+                break;
+            case 7:
+                enterDeepSleep();
                 break;
         }
         return;
@@ -735,11 +794,25 @@ void handleCenterShortPress() {
     if (state.currentScreen == SCR_MENU_DYNAMIC) {
         if (dynamicCount == 0) return;
         String chosen = dynamicItems[state.selectedIdx];
-        sendBleCommand("PLAY_ITEM:" + state.currentFolderId + ":" + String(state.selectedIdx));
-        state.trackTitle = chosen;
-        state.positionSec = 0;
-        state.isPlaying = true;
-        pushScreen(SCR_NOW_PLAYING, "np", "Now Playing");
+        int sel = state.selectedIdx;
+
+        if (state.currentFolderId == "playlists") {
+            loadDynamicFolder("pl_tracks:" + String(sel), chosen);
+            return;
+        } else if (state.currentFolderId == "artists") {
+            loadDynamicFolder("art_tracks:" + String(sel), chosen);
+            return;
+        } else if (state.currentFolderId == "albums") {
+            loadDynamicFolder("alb_tracks:" + String(sel), chosen);
+            return;
+        } else {
+            sendBleCommand("PLAY_ITEM:" + state.currentFolderId + ":" + String(sel));
+            state.trackTitle = chosen;
+            state.positionSec = 0;
+            state.isPlaying = true;
+            pushScreen(SCR_NOW_PLAYING, "np", "Now Playing");
+            return;
+        }
     }
 }
 
@@ -964,16 +1037,23 @@ void drawStatusBar() {
 }
 
 String getRightValueForItem(int idx) {
-    if (state.currentScreen == SCR_MENU_EXTRAS && idx == 4) {
-        return state.sleepMinutes == 0 ? "Off" : (String(state.sleepMinutes) + "m");
+    if (state.currentScreen == SCR_MENU_EXTRAS) {
+        if (idx == 3) {
+            return EQ_PRESET_NAMES[eqPresetIdx];
+        }
+        if (idx == 6) {
+            return state.sleepMinutes == 0 ? "Off" : (String(state.sleepMinutes) + "m");
+        }
     }
     if (state.currentScreen == SCR_MENU_SETTINGS) {
         switch (idx) {
-            case 1: return state.shuffle ? "Songs" : "Off";
-            case 2: return state.repeatMode == 0 ? "Off" : (state.repeatMode == 1 ? "All" : "One");
-            case 3: return state.invertScreen ? "On" : "Off";
-            case 4: return state.brightnessLevel == 0 ? "Low" : (state.brightnessLevel == 1 ? "Med" : "Max");
-            case 5: return state.uiStyle == 1 ? "Modern" : "Classic";
+            case 1: return state.uiStyle == 1 ? "Modern" : "Classic";
+            case 2: return state.sleepTimeoutSeconds == 0 ? "Never" : (String(state.sleepTimeoutSeconds) + "s");
+            case 3: return state.brightnessLevel == 0 ? "25%" : (state.brightnessLevel == 1 ? "50%" : (state.brightnessLevel == 2 ? "75%" : "100%"));
+            case 4: return state.visualizerEnabled ? "On" : "Off";
+            case 5: return state.shuffle ? "On" : "Off";
+            case 6: return state.repeatMode == 0 ? "Off" : (state.repeatMode == 1 ? "All" : "One");
+            case 7: return "";
             default: return "";
         }
     }
@@ -1140,34 +1220,52 @@ void drawNowPlayingScreen() {
         u8g2.drawStr(127 - u8g2.getStrWidth(totT.c_str()), 52, totT.c_str());
 
         // 5. Мета-строка внизу (номер в очереди + значки shuffle / repeat / like)
-        String meta = String(state.queueIdx) + "/" + String(state.queueTotal);
-        if (state.isLiked) meta += " [L]";
-        if (state.shuffle) meta += " [S]";
-        if (state.repeatMode == 1) meta += " [RA]";
-        else if (state.repeatMode == 2) meta += " [R1]";
+        String meta = "";
+        if (state.isLiked) meta += "[L] ";
+        if (state.shuffle) meta += "[S] ";
+        if (state.repeatMode == 1) meta += "[RA] ";
+        else if (state.repeatMode == 2) meta += "[R1] ";
         if (state.isScrubbing) meta = "[SEEK]";
         u8g2.drawStr(54, 62, meta.c_str());
+
+        // Audio visualizer (Modern UI)
+        if (state.visualizerEnabled && state.isPlaying) {
+            uint32_t t = millis() / 90;
+            for (int b = 0; b < 5; b++) {
+                int h = 1 + ((t * (b + 2) + b * 7) % 8);
+                u8g2.drawVLine(106 + b * 4, 63 - h, h);
+                u8g2.drawVLine(107 + b * 4, 63 - h, h);
+            }
+        }
 
     } else {
         // ================= КЛАССИЧЕСКИЙ IPOD UI =================
         u8g2.setFont(u8g2_font_5x8_tf);
-        String idxStr = String(state.queueIdx) + " of " + String(state.queueTotal);
         int leftX = 2;
         if (state.isLiked) {
             u8g2.drawGlyph(2, 21, 0x2665);
             u8g2.drawBox(2, 16, 5, 4);
             leftX = 10;
         }
-        u8g2.drawStr(leftX, 21, idxStr.c_str());
 
         if (state.isScrubbing) {
-            u8g2.drawStr(88, 21, "[Scrub]");
+            u8g2.drawStr(leftX, 21, "[Scrubbing]");
         } else {
             String modes = "";
             if (state.shuffle) modes += "SHF ";
-            if (state.repeatMode == 1) modes += "R:ALL";
-            else if (state.repeatMode == 2) modes += "R:1";
-            u8g2.drawStr(126 - u8g2.getStrWidth(modes.c_str()), 21, modes.c_str());
+            if (state.repeatMode == 1) modes += "R:ALL ";
+            else if (state.repeatMode == 2) modes += "R:1 ";
+            u8g2.drawStr(leftX, 21, modes.c_str());
+        }
+
+        // Audio visualizer (Classic UI)
+        if (state.visualizerEnabled && state.isPlaying) {
+            uint32_t t = millis() / 90;
+            for (int b = 0; b < 5; b++) {
+                int h = 1 + ((t * (b + 3) + b * 5) % 8);
+                u8g2.drawVLine(105 + b * 4, 21 - h, h);
+                u8g2.drawVLine(106 + b * 4, 21 - h, h);
+            }
         }
 
         u8g2.setFont(u8g2_font_6x12_t_cyrillic);
@@ -1213,6 +1311,34 @@ void drawNowPlayingScreen() {
             u8g2.drawStr(4, 63, curT.c_str());
             u8g2.drawStr(124 - u8g2.getStrWidth(remT.c_str()), 63, remT.c_str());
         }
+    }
+}
+
+void drawFlashlightScreen() {
+    u8g2.setDrawColor(1);
+    u8g2.drawBox(0, 0, 128, 64);
+}
+
+void drawEqualizerScreen() {
+    u8g2.setDrawColor(1);
+    u8g2.setFont(u8g2_font_6x12_tf);
+    const char* pName = EQ_PRESET_NAMES[eqPresetIdx];
+    int nw = u8g2.getStrWidth(pName);
+    u8g2.drawStr((128 - nw) / 2, 23, pName);
+
+    const char* freqLabels[] = {"60", "230", "910", "3.6k", "14k"};
+    u8g2.setFont(u8g2_font_4x6_tf);
+    for (int i = 0; i < 5; i++) {
+        int x = 18 + i * 20;
+        int dbVal = EQ_CURVES[eqPresetIdx][i];
+        int barH = map(dbVal, -3, 7, 3, 24);
+        barH = constrain(barH, 2, 24);
+
+        u8g2.drawFrame(x, 52 - 24, 12, 25);
+        u8g2.drawBox(x + 2, 52 - barH, 8, barH);
+
+        int fw = u8g2.getStrWidth(freqLabels[i]);
+        u8g2.drawStr(x + 6 - fw / 2, 62, freqLabels[i]);
     }
 }
 
@@ -1445,7 +1571,8 @@ void loop() {
     uint32_t now = millis();
 
     // Автоотключение экрана через 10 секунд бездействия
-    if (!isDisplaySleeping && !isOtaUpdating && (now - lastActivityMs >= SCREEN_TIMEOUT_MS)) {
+    uint32_t activeTimeout = state.sleepTimeoutSeconds > 0 ? ((uint32_t)state.sleepTimeoutSeconds * 1000UL) : 0;
+    if (!isDisplaySleeping && !isOtaUpdating && state.currentScreen != SCR_FLASHLIGHT && activeTimeout > 0 && (now - lastActivityMs >= activeTimeout)) {
         isDisplaySleeping = true;
         u8g2.setPowerSave(1);
     }
@@ -1477,7 +1604,9 @@ void loop() {
     if (!isDisplaySleeping && (now - lastFrameMs >= 30)) {
         lastFrameMs = now;
         u8g2.clearBuffer();
-        drawStatusBar();
+        if (state.currentScreen != SCR_FLASHLIGHT) {
+            drawStatusBar();
+        }
 
         switch (state.currentScreen) {
             case SCR_MENU_MAIN:
@@ -1497,6 +1626,12 @@ void loop() {
                 break;
             case SCR_STOPWATCH:
                 drawStopwatchScreen();
+                break;
+            case SCR_FLASHLIGHT:
+                drawFlashlightScreen();
+                break;
+            case SCR_EQUALIZER:
+                drawEqualizerScreen();
                 break;
             case SCR_GAME_BRICK:
                 updateAndDrawBrickGame();

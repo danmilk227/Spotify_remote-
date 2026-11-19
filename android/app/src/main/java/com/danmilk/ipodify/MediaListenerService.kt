@@ -366,10 +366,10 @@ class MediaListenerService : NotificationListenerService() {
                 }
                 cmd.startsWith("PLAY_ITEM:") -> {
                     val parts = cmd.split(":")
+                    val folder = parts.getOrNull(1) ?: ""
                     val idx = parts.getOrNull(2)?.toIntOrNull() ?: 0
-                    val uri = SpotifyApiHelper.playlistUris.getOrNull(idx)
-                    if (uri != null) {
-                        SpotifyApiHelper.playItem(this, uri)
+                    if (hasSpotifyToken) {
+                        SpotifyApiHelper.playTrackFromFolder(this, folder, idx)
                     } else {
                         controller?.transportControls?.play()
                     }

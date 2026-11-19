@@ -1,4 +1,4 @@
-package com.danmilk.ipodify
+﻿package com.danmilk.ipodify
 
 import android.content.Context
 import android.util.Base64
@@ -19,7 +19,9 @@ object SpotifyApiHelper {
     const val DEFAULT_CLIENT_ID = "49be876031464f1ba5a139eb691a4ef5"
     const val REDIRECT_URI = "ipodify://callback"
 
-    var playlistUris = mutableListOf<String>()
+    var containerUris = mutableListOf<String>()
+    var trackUris = mutableListOf<String>()
+    var playlistUris = trackUris
 
     data class PlaybackStateInfo(
         val isPlaying: Boolean,
@@ -363,12 +365,37 @@ object SpotifyApiHelper {
     // ==================== FOLDERS & PLAYLISTS ====================
 
     fun fetchFolderItems(context: Context, folder: String, callback: (List<String>) -> Unit) {
-        val endpoint = when (folder) {
-            "playlists" -> "/me/playlists?limit=25"
-            "artists" -> "/me/following?type=artist&limit=25"
-            "albums" -> "/me/albums?limit=25"
-            "recent" -> "/me/player/recently-played?limit=25"
-            else -> "/me/tracks?limit=25"
+        val endpoint: String? = when {
+            folder == "playlists" -> "/me/playlists?limit=30"
+            folder.startsWith("pl_tracks:") -> {
+                val idx = folder.substringAfter("pl_tracks:").toIntOrNull() ?: 0
+                val pUri = containerUris.getOrNull(idx)
+                val id = pUri?.substringAfter("playlist:")?.substringBefore("?")
+                if (id != null) "/playlists//tracks?limit=35" else null
+            }
+            folder == "artists" -> "/me/following?type=artist&limit=30"
+            folder.startsWith("art_tracks:") -> {
+                val idx = folder.substringAfter("art_tracks:").toIntOrNull() ?: 0
+                val aUri = containerUris.getOrNull(idx)
+                val id = aUri?.substringAfter("artist:")?.substringBefore("?")
+                if (id != null) "/artists//top-tracks?market=from_token" else null
+            }
+            folder == "albums" -> "/me/albums?limit=30"
+            folder.startsWith("alb_tracks:") -> {
+                val idx = folder.substringAfter("alb_tracks:").toIntOrNull() ?: 0
+                val aUri = containerUris.getOrNull(idx)
+                val id = aUri?.substringAfter("album:")?.substringBefore("?")
+                if (id != null) "/albums//tracks?limit=35" else null
+            }
+            folder == "recent" -> "/me/player/recently-played?limit=30"
+            folder == "queue" -> "/me/player/queue"
+            folder == "songs" || folder == "top" -> "/me/tracks?limit=35"
+            else -> "/me/tracks?limit=30"
+        }
+
+        if (endpoint == null) {
+            callback(listOf("РџСѓСЃС‚Рѕ"))
+            return
         }
 
         apiRequest(context, endpoint, "GET") { code, body ->
@@ -376,54 +403,152 @@ object SpotifyApiHelper {
                 try {
                     val json = JSONObject(body)
                     val names = mutableListOf<String>()
-                    playlistUris.clear()
 
-                    val items = if (folder == "artists") {
-                        json.optJSONObject("artists")?.optJSONArray("items")
-                    } else {
-                        json.optJSONArray("items")
-                    }
-
-                    if (items != null) {
-                        for (i in 0 until items.length()) {
-                            val obj = items.getJSONObject(i)
-                            val (name, uri) = when (folder) {
-                                "playlists" -> Pair(obj.optString("name"), obj.optString("uri"))
-                                "artists" -> Pair(obj.optString("name"), obj.optString("uri"))
-                                "albums" -> {
-                                    val alb = obj.optJSONObject("album") ?: obj
-                                    Pair(alb.optString("name"), alb.optString("uri"))
-                                }
-                                "recent", "songs" -> {
-                                    val trk = obj.optJSONObject("track") ?: obj
-                                    val art = trk.optJSONArray("artists")?.optJSONObject(0)?.optString("name") ?: ""
-                                    val tName = trk.optString("name")
-                                    Pair(if (art.isNotEmpty()) "$tName - $art" else tName, trk.optString("uri"))
-                                }
-                                else -> Pair(obj.optString("name"), obj.optString("uri"))
+                    when {
+                        folder == "playlists" || folder == "artists" || folder == "albums" -> {
+                            containerUris.clear()
+                            val items = if (folder == "artists") {
+                                json.optJSONObject("artists")?.optJSONArray("items")
+                            } else {
+                                json.optJSONArray("items")
                             }
-
-                            if (name.isNotEmpty()) {
-                                names.add(name.replace("|", "/"))
-                                playlistUris.add(uri)
+                            if (items != null) {
+                                for (i in 0 until items.length()) {
+                                    val obj = items.getJSONObject(i)
+                                    val (name, uri) = when (folder) {
+                                        "playlists", "artists" -> Pair(obj.optString("name"), obj.optString("uri"))
+                                        "albums" -> {
+                                            val alb = obj.optJSONObject("album") ?: obj
+                                            Pair(alb.optString("name"), alb.optString("uri"))
+                                        }
+                                        else -> Pair(obj.optString("name"), obj.optString("uri"))
+                                    }
+                                    if (name.isNotEmpty()) {
+                                        names.add(name.replace("|", "/"))
+                                        containerUris.add(uri)
+                                    }
+                                }
+                            }
+                        }
+                        folder.startsWith("pl_tracks:") || folder == "songs" || folder == "recent" || folder == "top" -> {
+                            trackUris.clear()
+                            val items = json.optJSONArray("items")
+                            if (items != null) {
+                                for (i in 0 until items.length()) {
+                                    val obj = items.getJSONObject(i)
+                                    val trk = obj.optJSONObject("track") ?: obj
+                                    val tName = trk.optString("name")
+                                    val art = trk.optJSONArray("artists")?.optJSONObject(0)?.optString("name") ?: ""
+                                    val uri = trk.optString("uri")
+                                    if (tName.isNotEmpty()) {
+                                        names.add((if (art.isNotEmpty()) "$tName - $art" else tName).replace("|", "/"))
+                                        trackUris.add(uri)
+                                    }
+                                }
+                            }
+                        }
+                        folder.startsWith("art_tracks:") -> {
+                            trackUris.clear()
+                            val tracks = json.optJSONArray("tracks")
+                            if (tracks != null) {
+                                for (i in 0 until tracks.length()) {
+                                    val trk = tracks.getJSONObject(i)
+                                    val tName = trk.optString("name")
+                                    val uri = trk.optString("uri")
+                                    if (tName.isNotEmpty()) {
+                                        names.add(tName.replace("|", "/"))
+                                        trackUris.add(uri)
+                                    }
+                                }
+                            }
+                        }
+                        folder.startsWith("alb_tracks:") -> {
+                            trackUris.clear()
+                            val items = json.optJSONArray("items")
+                            if (items != null) {
+                                for (i in 0 until items.length()) {
+                                    val trk = items.getJSONObject(i)
+                                    val tName = trk.optString("name")
+                                    val uri = trk.optString("uri")
+                                    if (tName.isNotEmpty()) {
+                                        names.add(tName.replace("|", "/"))
+                                        trackUris.add(uri)
+                                    }
+                                }
+                            }
+                        }
+                        folder == "queue" -> {
+                            trackUris.clear()
+                            val queue = json.optJSONArray("queue")
+                            if (queue != null) {
+                                for (i in 0 until queue.length()) {
+                                    val trk = queue.getJSONObject(i)
+                                    val tName = trk.optString("name")
+                                    val art = trk.optJSONArray("artists")?.optJSONObject(0)?.optString("name") ?: ""
+                                    val uri = trk.optString("uri")
+                                    if (tName.isNotEmpty()) {
+                                        names.add((if (art.isNotEmpty()) "$tName - $art" else tName).replace("|", "/"))
+                                        trackUris.add(uri)
+                                    }
+                                }
                             }
                         }
                     }
 
-                    callback(if (names.isNotEmpty()) names else listOf("Пусто"))
-                    return@apiRequest
+                    if (names.isNotEmpty()) {
+                        callback(names)
+                        return@apiRequest
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing folder $folder: ${e.message}")
                 }
             }
+
             // Fallback
-            val fallback = when (folder) {
-                "playlists" -> listOf("Войдите в Spotify", "Моя волна", "Любимые треки", "Рок Хиты")
-                "artists" -> listOf("Three Days Grace", "Linkin Park", "Skillet", "Bring Me The Horizon")
-                "albums" -> listOf("One-X", "Meteora", "Comatose", "Sempiternal")
-                else -> listOf("Трек 1", "Трек 2", "Трек 3", "Трек 4")
+            val fallback = when {
+                folder == "playlists" -> listOf("My Wave", "Cyberpunk 2077 OST", "NERV Synchro Mix", "Late Night Synth")
+                folder.startsWith("pl_tracks:") -> listOf("Animal I Have Become", "Riot", "Never Too Late", "Time of Dying")
+                folder == "artists" -> listOf("Three Days Grace", "Linkin Park", "Skillet", "Bring Me The Horizon")
+                folder.startsWith("art_tracks:") -> listOf("In The End", "Numb", "Faint", "Crawling")
+                folder == "albums" -> listOf("One-X", "Meteora", "Comatose", "Sempiternal")
+                folder.startsWith("alb_tracks:") -> listOf("It's All Over", "Pain", "Animal I Have Become", "Never Too Late")
+                else -> listOf("РўСЂРµРє 1", "РўСЂРµРє 2", "РўСЂРµРє 3", "РўСЂРµРє 4")
             }
             callback(fallback)
+        }
+    }
+
+    fun playTrackFromFolder(context: Context, folder: String, idx: Int) {
+        if (folder.startsWith("pl_tracks:")) {
+            val pIdx = folder.substringAfter("pl_tracks:").toIntOrNull() ?: 0
+            val pUri = containerUris.getOrNull(pIdx)
+            if (pUri != null) {
+                val payload = JSONObject().apply {
+                    put("context_uri", pUri)
+                    put("offset", JSONObject().put("position", idx))
+                }.toString()
+                apiRequest(context, "/me/player/play", "PUT", payload)
+                return
+            }
+        } else if (folder.startsWith("alb_tracks:")) {
+            val aIdx = folder.substringAfter("alb_tracks:").toIntOrNull() ?: 0
+            val aUri = containerUris.getOrNull(aIdx)
+            if (aUri != null) {
+                val payload = JSONObject().apply {
+                    put("context_uri", aUri)
+                    put("offset", JSONObject().put("position", idx))
+                }.toString()
+                apiRequest(context, "/me/player/play", "PUT", payload)
+                return
+            }
+        }
+
+        val trackUri = trackUris.getOrNull(idx)
+        if (trackUri != null) {
+            val payload = JSONObject().apply {
+                put("uris", org.json.JSONArray().put(trackUri))
+            }.toString()
+            apiRequest(context, "/me/player/play", "PUT", payload)
         }
     }
 
