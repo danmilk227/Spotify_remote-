@@ -1147,7 +1147,6 @@ void drawMenuScreen() {
             u8g2.drawUTF8(3, yTop + 10, label.c_str());
             u8g2.setMaxClipWindow();
         }
-        }
     }
 
     // Скроллбар справа

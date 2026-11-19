@@ -1,5 +1,7 @@
 package com.danmilk.ipodify
 
+import android.media.audiofx.Visualizer
+
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
@@ -331,7 +333,7 @@ class MediaListenerService : NotificationListenerService() {
         val isPlaying = pbState?.state == PlaybackState.STATE_PLAYING
 
         lastTrackInfo = "$title - $artist"
-        if (state.state == PlaybackState.STATE_PLAYING) {
+        if (isPlaying) {
             spectrumVis?.start()
         } else {
             spectrumVis?.stop()
