@@ -262,7 +262,7 @@ class IpodifyBleService : Service() {
 
                     // Request initial state from media listener
                     MediaListenerService.instance?.updateActiveController()
-                    MediaListenerService.instance?.broadcastCurrentPlayback()
+                    MediaListenerService.instance?.resetArtCacheAndResend()
                 } else {
                     Log.e(TAG, "Nordic UART Service not found on device!")
                 }

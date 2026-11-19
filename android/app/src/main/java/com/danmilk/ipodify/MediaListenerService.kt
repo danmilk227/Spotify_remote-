@@ -4,11 +4,14 @@ import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
 import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
@@ -35,36 +38,81 @@ class MediaListenerService : NotificationListenerService() {
     private var lastSentPosSec = -1
     private var lastArtTrackKey = ""
 
-    private fun checkAndSendAlbumArt(title: String, artist: String, albumArtUrl: String? = null, directBitmap: Bitmap? = null) {
+    @Volatile
+    var lastNotificationBitmap: Bitmap? = null
+
+    private var lastSpotifyApiPollMs = 0L
+    private var spotifyApiBackoffUntilMs = 0L
+
+    fun resetArtCacheAndResend() {
+        lastArtTrackKey = ""
+        handler.post {
+            broadcastCurrentPlayback(forceArt = true)
+        }
+    }
+
+    private fun checkAndSendAlbumArt(
+        title: String,
+        artist: String,
+        albumArtUrl: String? = null,
+        directBitmap: Bitmap? = null,
+        force: Boolean = false
+    ) {
         val key = "$title|$artist"
-        if (key == lastArtTrackKey || title.isEmpty()) return
+        if (!force && key == lastArtTrackKey && lastArtTrackKey.isNotEmpty()) return
+        if (title.isEmpty()) return
         lastArtTrackKey = key
 
         thread {
             try {
-                var bmp = directBitmap
+                var bmp: Bitmap? = directBitmap
+
                 if (bmp == null && !albumArtUrl.isNullOrEmpty()) {
-                    val conn = URL(albumArtUrl).openConnection() as HttpURLConnection
-                    conn.connectTimeout = 4000
-                    conn.readTimeout = 4000
-                    if (conn.responseCode == 200) {
-                        bmp = BitmapFactory.decodeStream(conn.inputStream)
+                    if (albumArtUrl.startsWith("content://") || albumArtUrl.startsWith("android.resource://") || albumArtUrl.startsWith("file://")) {
+                        try {
+                            contentResolver.openInputStream(Uri.parse(albumArtUrl))?.use { stream ->
+                                bmp = BitmapFactory.decodeStream(stream)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed reading content URI: ${e.message}")
+                        }
+                    } else if (albumArtUrl.startsWith("http://") || albumArtUrl.startsWith("https://")) {
+                        try {
+                            val conn = URL(albumArtUrl).openConnection() as HttpURLConnection
+                            conn.connectTimeout = 4000
+                            conn.readTimeout = 4000
+                            if (conn.responseCode == 200) {
+                                bmp = BitmapFactory.decodeStream(conn.inputStream)
+                            }
+                            conn.disconnect()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed downloading album art: ${e.message}")
+                        }
                     }
-                    conn.disconnect()
+                }
+
+                if (bmp == null && lastNotificationBitmap != null) {
+                    bmp = lastNotificationBitmap
                 }
 
                 if (bmp != null) {
-                    val xbmBytes = AlbumArtProcessor.processTo1BitXbm(bmp, 48, 48)
+                    val xbmBytes = AlbumArtProcessor.processTo1BitXbm(bmp!!, 48, 48)
                     val b64 = AlbumArtProcessor.toBase64(xbmBytes)
-                    // 384 characters encoded. Split into 2 parts of 192 bytes for reliable transmission
+
+                    // 1) Full ART: packet (atomic, fits in 512-byte MTU)
+                    IpodifyBleService.instance?.sendPacketToBle("ART:$b64")
+
+                    // 2) Also chunked ART0: / ART1: with delay
                     val half = b64.length / 2
                     val part0 = b64.substring(0, half)
                     val part1 = b64.substring(half)
-
+                    Thread.sleep(80)
                     IpodifyBleService.instance?.sendPacketToBle("ART0:$part0")
-                    Thread.sleep(40)
+                    Thread.sleep(80)
                     IpodifyBleService.instance?.sendPacketToBle("ART1:$part1")
                     Log.i(TAG, "Sent 48x48 album art to ESP32 for '$title'")
+                } else {
+                    Log.w(TAG, "No album art available for '$title'")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to load/send album art: ${e.message}")
@@ -78,12 +126,18 @@ class MediaListenerService : NotificationListenerService() {
                 updateActiveController()
             }
 
-            // Если есть токен Spotify, периодически опрашиваем Web API
-            if (SpotifyApiHelper.hasValidToken(this@MediaListenerService)) {
+            val now = System.currentTimeMillis()
+            // Poll Web API only every 5 seconds to avoid 429 Rate Limits
+            if (SpotifyApiHelper.hasValidToken(this@MediaListenerService) &&
+                now >= spotifyApiBackoffUntilMs &&
+                (now - lastSpotifyApiPollMs >= 5000L)) {
+                lastSpotifyApiPollMs = now
                 SpotifyApiHelper.getCurrentPlayback(this@MediaListenerService) { info ->
                     if (info != null) {
                         sendSpotifyApiPlayback(info)
                     } else {
+                        // Rate limit backoff
+                        spotifyApiBackoffUntilMs = System.currentTimeMillis() + 15000L
                         broadcastCurrentPlayback()
                     }
                 }
@@ -101,7 +155,8 @@ class MediaListenerService : NotificationListenerService() {
         }
 
         override fun onMetadataChanged(metadata: MediaMetadata?) {
-            broadcastCurrentPlayback()
+            lastArtTrackKey = ""
+            broadcastCurrentPlayback(forceArt = true)
         }
     }
 
@@ -114,7 +169,30 @@ class MediaListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        if (sbn?.packageName?.contains("spotify") == true) {
+        val sbnPkg = sbn?.packageName ?: ""
+        if (sbnPkg.contains("spotify") || sbnPkg.contains("music") || activeController?.packageName == sbnPkg) {
+            try {
+                val notif = sbn?.notification
+                val icon = notif?.getLargeIcon()
+                if (icon != null) {
+                    val drawable = icon.loadDrawable(this)
+                    if (drawable is BitmapDrawable) {
+                        lastNotificationBitmap = drawable.bitmap
+                    } else if (drawable != null) {
+                        val bmp = Bitmap.createBitmap(
+                            drawable.intrinsicWidth.coerceAtLeast(48),
+                            drawable.intrinsicHeight.coerceAtLeast(48),
+                            Bitmap.Config.ARGB_8888
+                        )
+                        val canvas = Canvas(bmp)
+                        drawable.setBounds(0, 0, canvas.width, canvas.height)
+                        drawable.draw(canvas)
+                        lastNotificationBitmap = bmp
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not extract notification icon: ${e.message}")
+            }
             updateActiveController()
             broadcastCurrentPlayback()
         }
@@ -127,42 +205,42 @@ class MediaListenerService : NotificationListenerService() {
     }
 
     fun updateActiveController() {
-        try {
-            val sessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-            val component = ComponentName(this, MediaListenerService::class.java)
-            val controllers = sessionManager.getActiveSessions(component)
+        handler.post {
+            try {
+                val sessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                val component = ComponentName(this, MediaListenerService::class.java)
+                val controllers = sessionManager.getActiveSessions(component)
 
-            val spotify = controllers.firstOrNull { it.packageName.contains("spotify") }
-            val chosen = spotify ?: controllers.firstOrNull()
+                val spotify = controllers.firstOrNull { it.packageName.contains("spotify") }
+                val chosen = spotify ?: controllers.firstOrNull()
 
-            if (chosen != activeController) {
-                activeController?.unregisterCallback(callback)
-                activeController = chosen
-                activeController?.registerCallback(callback)
-                Log.i(TAG, "Active media controller changed to: ${chosen?.packageName}")
-                broadcastCurrentPlayback()
+                if (chosen != activeController) {
+                    try {
+                        activeController?.unregisterCallback(callback)
+                    } catch (_: Exception) {}
+                    activeController = chosen
+                    try {
+                        activeController?.registerCallback(callback, handler)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to register callback: ${e.message}")
+                    }
+                    Log.i(TAG, "Active media controller changed to: ${chosen?.packageName}")
+                    lastArtTrackKey = ""
+                    broadcastCurrentPlayback(forceArt = true)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error updating media controller: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating media controller: ${e.message}")
         }
     }
 
     private fun sendSpotifyApiPlayback(info: SpotifyApiHelper.PlaybackStateInfo) {
-        lastTrackInfo = "${info.title} — ${info.artist}"
+        lastTrackInfo = "${info.title} - ${info.artist}"
         MainActivity.instance?.updateUI()
 
         val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         val volPct = (curVol * 100) / maxVol
-
-        val now = System.currentTimeMillis()
-        if (info.title == lastSentTitle && info.posSec == lastSentPosSec && (now - lastPacketSentMs < 800)) {
-            return
-        }
-
-        lastPacketSentMs = now
-        lastSentTitle = info.title
-        lastSentPosSec = info.posSec
 
         val shuf = if (info.isShuffled) 1 else 0
         val isPlay = if (info.isPlaying) 1 else 0
@@ -173,25 +251,26 @@ class MediaListenerService : NotificationListenerService() {
         checkAndSendAlbumArt(info.title, info.artist, albumArtUrl = info.imageUrl)
     }
 
-    fun broadcastCurrentPlayback() {
+    fun broadcastCurrentPlayback(forceArt: Boolean = false) {
         val controller = activeController ?: return
         val metadata = controller.metadata
         val pbState = controller.playbackState
 
-        val isPlaying = pbState?.state == PlaybackState.STATE_PLAYING
-        val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: ""
-        val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: ""
-        val album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
+        val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
+            ?: metadata?.description?.title?.toString()
+            ?: "Unknown Title"
+        val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+            ?: metadata?.description?.subtitle?.toString()
+            ?: "Unknown Artist"
+        val album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM)
+            ?: metadata?.description?.description?.toString()
+            ?: ""
+
         val durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
         val positionMs = pbState?.position ?: 0L
+        val isPlaying = pbState?.state == PlaybackState.STATE_PLAYING
 
-        if (title.isEmpty()) {
-            lastTrackInfo = "Плеер пауза / нет названия"
-            MainActivity.instance?.updateUI()
-            return
-        }
-
-        lastTrackInfo = "$title — $artist"
+        lastTrackInfo = "$title - $artist"
         MainActivity.instance?.updateUI()
 
         val posSec = (positionMs / 1000).toInt()
@@ -202,10 +281,10 @@ class MediaListenerService : NotificationListenerService() {
         val volPct = (curVol * 100) / maxVol
 
         val now = System.currentTimeMillis()
-        if (title == lastSentTitle && posSec == lastSentPosSec && (now - lastPacketSentMs < 800)) {
+        if (!forceArt && title == lastSentTitle && posSec == lastSentPosSec && (now - lastPacketSentMs < 800)) {
             return
         }
-        if (now - lastPacketSentMs < 250) {
+        if (!forceArt && now - lastPacketSentMs < 250) {
             return
         }
 
@@ -217,8 +296,18 @@ class MediaListenerService : NotificationListenerService() {
         val packet = "NP|${if (isPlaying) 1 else 0}|1|0|0|1|10|$posSec|$durSec|$volPct|${clean(title)}|${clean(artist)}|${clean(album)}"
         IpodifyBleService.instance?.sendPacketToBle(packet)
 
-        val directBmp = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
-        checkAndSendAlbumArt(title, artist, directBitmap = directBmp)
+        val artUriStr = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
+            ?: metadata?.getString(MediaMetadata.METADATA_KEY_ART_URI)
+            ?: metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
+            ?: metadata?.description?.iconUri?.toString()
+
+        val directBmp = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+            ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+            ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+            ?: metadata?.description?.iconBitmap
+            ?: lastNotificationBitmap
+
+        checkAndSendAlbumArt(title, artist, albumArtUrl = artUriStr, directBitmap = directBmp, force = forceArt)
     }
 
     fun handleCommand(cmd: String) {
@@ -238,15 +327,16 @@ class MediaListenerService : NotificationListenerService() {
                     }
                 }
                 cmd == "CMD:NEXT" -> {
+                    lastArtTrackKey = ""
                     if (hasSpotifyToken) SpotifyApiHelper.next(this)
                     controller?.transportControls?.skipToNext()
                 }
                 cmd == "CMD:PREV" -> {
+                    lastArtTrackKey = ""
                     if (hasSpotifyToken) SpotifyApiHelper.previous(this)
                     controller?.transportControls?.skipToPrevious()
                 }
                 cmd == "CMD:VOL_UP" -> {
-                    // Флаг 0 вместо FLAG_SHOW_UI устраняет лавину системных UI-событий
                     audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
                 }
                 cmd == "CMD:VOL_DOWN" -> {
