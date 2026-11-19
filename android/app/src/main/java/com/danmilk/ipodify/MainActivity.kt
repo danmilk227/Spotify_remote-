@@ -9,7 +9,11 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -20,6 +24,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -28,6 +33,7 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
 
     companion object {
+        private const val TAG = "iPodifyMain"
         var instance: MainActivity? = null
         private const val PERMISSION_REQ_CODE = 101
     }
@@ -220,25 +226,26 @@ class MainActivity : AppCompatActivity() {
                 // 2. Если локального нет, скачиваем с GitHub
                 if (firmwareBytes == null) {
                     for (urlStr in firmwareUrls) {
-                    try {
-                        val url = URL(urlStr)
-                        val conn = url.openConnection() as HttpURLConnection
-                        conn.connectTimeout = 5000
-                        conn.readTimeout = 7000
-                        if (conn.responseCode == 200) {
-                            val baos = ByteArrayOutputStream()
-                            val buffer = ByteArray(4096)
-                            val input: InputStream = conn.inputStream
-                            var read: Int
-                            while (input.read(buffer).also { read = it } != -1) {
-                                baos.write(buffer, 0, read)
+                        try {
+                            val url = URL(urlStr)
+                            val conn = url.openConnection() as HttpURLConnection
+                            conn.connectTimeout = 5000
+                            conn.readTimeout = 7000
+                            if (conn.responseCode == 200) {
+                                val baos = ByteArrayOutputStream()
+                                val buffer = ByteArray(4096)
+                                val input: InputStream = conn.inputStream
+                                var read: Int
+                                while (input.read(buffer).also { read = it } != -1) {
+                                    baos.write(buffer, 0, read)
+                                }
+                                input.close()
+                                firmwareBytes = baos.toByteArray()
+                                if (firmwareBytes.size > 50000) break
                             }
-                            input.close()
-                            firmwareBytes = baos.toByteArray()
-                            if (firmwareBytes.size > 50000) break
+                        } catch (e: Exception) {
+                            // try next URL
                         }
-                    } catch (e: Exception) {
-                        // try next URL
                     }
                 }
 
