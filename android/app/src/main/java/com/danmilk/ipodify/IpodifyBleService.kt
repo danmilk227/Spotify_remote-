@@ -292,6 +292,9 @@ class IpodifyBleService : Service() {
     }
 
     fun sendPacketToBle(packet: String) {
+        if (isOtaInProgress && !packet.startsWith("OTA_")) {
+            return
+        }
         val gatt = bluetoothGatt ?: return
         val char = rxChar ?: return
         if (!isConnected) return
@@ -369,8 +372,11 @@ class IpodifyBleService : Service() {
 
                 if (isOtaInProgress) {
                     onProgress(100, "Проверка целостности и финализация...")
-                    Thread.sleep(300)
-                    sendPacketToBle("OTA_END:$totalSize")
+                    Thread.sleep(400)
+                    for (r in 1..4) {
+                        sendPacketToBle("OTA_END:$totalSize")
+                        Thread.sleep(200)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "OTA failed: ${e.message}")

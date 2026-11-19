@@ -298,6 +298,7 @@ void parseIncomingBlePacket(const String& raw) {
         otaWrittenBytes = 0;
         otaProgressPct = 0;
         otaStatusMsg = "Preparing OTA...";
+        Update.abort(); // Clear any previous stale session
         if (otaTotalBytes > 0 && Update.begin(otaTotalBytes, U_FLASH)) {
             isOtaUpdating = true;
             otaStatusMsg = "Flashing...";
@@ -455,6 +456,9 @@ class RxCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) override {
         String rxValue = pCharacteristic->getValue();
         if (rxValue.length() > 0 && bleMutex) {
+            if (isOtaUpdating && !rxValue.startsWith("OTA_")) {
+                return;
+            }
             if (xSemaphoreTake(bleMutex, (TickType_t)10) == pdTRUE) {
                 pendingBlePacket = rxValue;
                 hasNewBlePacket = true;
