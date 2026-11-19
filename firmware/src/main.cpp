@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ============================================================================
  * iPodify Physical Remote v2.0 (iPod Classic Edition - 6 Buttons)
  * MCU: ESP32-C3 (4MB Flash) | Display: SSD1306 0.96" I2C (128x64)
@@ -37,6 +37,7 @@
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E" // Телефон -> ESP32
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E" // ESP32 -> Телефон
 #define CHARACTERISTIC_UUID_OTA "6E400004-B5A3-F393-E0A9-E50E24DCCA9E" // Телефон -> ESP32 (OTA binary stream)
+#define CHARACTERISTIC_UUID_STREAM "6E400005-B5A3-F393-E0A9-E50E24DCCA9E" // PC Stream & Gamepad (BT)
 
 // ======================= ДИСПЛЕЙ SSD1306 128x64 =============================
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_I2C_SCL, PIN_I2C_SDA);
@@ -203,6 +204,8 @@ int decodeBase64(const char* input, size_t inputLen, uint8_t* output, size_t max
 BLEServer* pServer = nullptr;
 BLECharacteristic* pTxCharacteristic = nullptr;
 BLECharacteristic* pOtaCharacteristic = nullptr;
+BLECharacteristic* pStreamCharacteristic = nullptr;
+uint32_t lastPcStreamFrameMs = 0;
 
 SemaphoreHandle_t bleMutex = nullptr;
 String pendingBlePacket = "";
@@ -421,14 +424,29 @@ void parseIncomingBlePacket(const String& raw) {
     }
 }
 
+uint8_t pcStreamBuffer[1024];
+
+void sendStreamButtonEvent(const char* btn, int stateVal) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "BTN:%s:%d\n", btn, stateVal);
+    Serial.print(buf);
+    if (pStreamCharacteristic && state.bleConnected) {
+        pStreamCharacteristic->setValue((uint8_t*)buf, strlen(buf));
+        pStreamCharacteristic->notify();
+    }
+}
+
 class ServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pSrv) override {
         state.bleConnected = true;
         showToast("BLE Connected");
+        BLEDevice::startAdvertising(); // Keep advertising so PC Streamer can also connect over Bluetooth
     }
     void onDisconnect(BLEServer* pSrv) override {
-        state.bleConnected = false;
-        showToast("BLE Disconnected");
+        if (pSrv->getConnectedCount() == 0) {
+            state.bleConnected = false;
+            showToast("BLE Disconnected");
+        }
         BLEDevice::startAdvertising();
     }
 };
@@ -463,6 +481,29 @@ class OtaCallbacks : public BLECharacteristicCallbacks {
     }
 };
 
+class StreamCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) override {
+        uint8_t* data = pCharacteristic->getData();
+        size_t len = pCharacteristic->getLength();
+        if (!data || len < 3) return;
+        uint8_t chunkIdx = data[0];
+        uint8_t totalChunks = data[1];
+        size_t payloadLen = len - 2;
+        if (chunkIdx < totalChunks && (chunkIdx * 256 + payloadLen) <= 1024) {
+            memcpy(&pcStreamBuffer[chunkIdx * 256], &data[2], payloadLen);
+            if (chunkIdx == totalChunks - 1) {
+                lastPcStreamFrameMs = millis();
+                lastActivityMs = millis();
+                if (state.currentScreen != SCR_PC_STREAM) {
+                    pushScreen(SCR_PC_STREAM, "pc", "PC Monitor");
+                }
+                memcpy(u8g2.getBufferPtr(), pcStreamBuffer, 1024);
+                u8g2.sendBuffer();
+            }
+        }
+    }
+};
+
 void initBLE() {
     BLEDevice::init("iPodify 3G");
     BLEDevice::setMTU(512);
@@ -488,10 +529,19 @@ void initBLE() {
     );
     pOtaCharacteristic->setCallbacks(new OtaCallbacks());
 
+    pStreamCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID_STREAM,
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pStreamCharacteristic->addDescriptor(new BLE2902());
+    pStreamCharacteristic->setCallbacks(new StreamCallbacks());
+
     pService->start();
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06);
+    pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
 }
 
@@ -865,6 +915,12 @@ BtnTracker btns[6] = {
 
 void onButtonShortPress(uint8_t pin) {
     if (isOtaUpdating) return;
+    if (state.currentScreen == SCR_PC_STREAM) {
+        if (pin == PIN_BTN_MENU) {
+            popScreen();
+        }
+        return;
+    }
     switch (pin) {
         case PIN_BTN_MENU:
             popScreen();
@@ -983,7 +1039,7 @@ void pollButtons() {
                                 (btns[i].pin == PIN_BTN_LEFT) ? "LEFT" :
                                 (btns[i].pin == PIN_BTN_RIGHT) ? "RIGHT" :
                                 (btns[i].pin == PIN_BTN_CENTER) ? "CENTER" : "MENU";
-            Serial.printf("BTN:%s:1\n", bName);
+            sendStreamButtonEvent(bName, 1);
         } else if (lvl == LOW) {
             lastActivityMs = now;
             if (btns[i].wakeIgnored) {
@@ -1002,6 +1058,12 @@ void pollButtons() {
             }
         } else if (lvl == HIGH && btns[i].lastLevel == LOW) {
             lastActivityMs = now;
+            const char* bName = (btns[i].pin == PIN_BTN_UP) ? "UP" :
+                                (btns[i].pin == PIN_BTN_DOWN) ? "DOWN" :
+                                (btns[i].pin == PIN_BTN_LEFT) ? "LEFT" :
+                                (btns[i].pin == PIN_BTN_RIGHT) ? "RIGHT" :
+                                (btns[i].pin == PIN_BTN_CENTER) ? "CENTER" : "MENU";
+            sendStreamButtonEvent(bName, 0);
             if (btns[i].wakeIgnored) {
                 // Кнопка отпущена: сбрасываем флаг, действие кнопки НЕ вызывается!
                 btns[i].wakeIgnored = false;
@@ -1354,8 +1416,6 @@ void drawFlashlightScreen() {
 
 
 // ======================= PC MONITOR STREAM ========================
-uint8_t pcStreamBuffer[1024];
-
 void processSerialPcStream() {
     static int rxState = 0;
     static int rxIdx = 0;
@@ -1392,6 +1452,7 @@ void processSerialPcStream() {
                         pushScreen(SCR_PC_STREAM, "pc", "PC Monitor");
                     }
                     lastActivityMs = millis();
+                    lastPcStreamFrameMs = millis();
                     memcpy(u8g2.getBufferPtr(), pcStreamBuffer, 1024);
                     u8g2.sendBuffer();
                 }
@@ -1402,7 +1463,18 @@ void processSerialPcStream() {
 }
 
 void drawPcStreamScreen() {
-    memcpy(u8g2.getBufferPtr(), pcStreamBuffer, 1024);
+    if (millis() - lastPcStreamFrameMs > 3500) {
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(12, 14, "[ PC Stream (BT) ]");
+        u8g2.setFont(u8g2_font_5x7_tr);
+        u8g2.drawStr(8, 28, "Waiting for PC Streamer...");
+        u8g2.drawStr(8, 38, "BT Device: iPodify 3G");
+        u8g2.drawStr(8, 48, "Gamepad: W,S,Space,Mouse");
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(24, 62, "[MENU] to Exit");
+    } else {
+        memcpy(u8g2.getBufferPtr(), pcStreamBuffer, 1024);
+    }
 }
 
 void drawEqualizerScreen() {
