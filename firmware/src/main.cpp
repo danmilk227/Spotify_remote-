@@ -15,7 +15,6 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
-#include <esp_gap_ble_api.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <esp_sleep.h>
@@ -509,25 +508,9 @@ class StreamCallbacks : public BLECharacteristicCallbacks {
     }
 };
 
-class MySecurityCallbacks : public BLESecurityCallbacks {
-    uint32_t onPassKeyRequest() override { return 0; }
-    void onPassKeyNotify(uint32_t pass_key) override {}
-    bool onConfirmPIN(uint32_t pass_key) override { return true; }
-    bool onSecurityRequest() override { return true; }
-    void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override {
-        Serial.printf("[BLE] Security auth complete: %s\n", cmpl.success ? "SUCCESS" : "FAILED");
-    }
-};
-
 void initBLE() {
     BLEDevice::init("iPodify 3G");
     BLEDevice::setMTU(512);
-    BLEDevice::setSecurityCallbacks(new MySecurityCallbacks());
-    BLESecurity *pSecurity = new BLESecurity();
-    pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
-    pSecurity->setCapability(ESP_IO_CAP_NONE);
-    pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new ServerCallbacks());
 
