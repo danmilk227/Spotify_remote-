@@ -15,6 +15,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <esp_gap_ble_api.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <esp_sleep.h>
