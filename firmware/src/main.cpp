@@ -53,6 +53,7 @@ enum ScreenId {
     SCR_STOPWATCH,
     SCR_FLASHLIGHT,
     SCR_EQUALIZER,
+    SCR_PC_STREAM,
     SCR_GAME_BRICK,
     SCR_GAME_SNAKE,
     SCR_OTA
@@ -74,7 +75,9 @@ struct AppState {
     bool invertScreen = false;
     uint8_t brightnessLevel = 2; // 0: 25%, 1: 50%, 2: 75%, 3: 100%
     bool visualizerEnabled = true;
-    int sleepTimeoutSeconds = 10; // 5, 10, 30, 0 (Never)
+    int sleepTimeoutSeconds = 10;
+    uint8_t realSpec[5] = {3, 4, 6, 4, 2};
+    uint32_t lastSpecMs = 0; // 5, 10, 30, 0 (Never)
 
     // Playback state
     bool isPlaying = true;
@@ -140,9 +143,9 @@ const char* MAIN_MENU_LABELS[] = {
 const int MAIN_MENU_COUNT = 10;
 
 const char* EXTRAS_MENU_LABELS[] = {
-    "Clock", "Stopwatch", "Flashlight", "Equalizer", "Brick (Breakout)", "Snake (Retro)", "Sleep Timer"
+    "Clock", "Stopwatch", "Flashlight", "Equalizer", "PC Monitor Stream", "Brick (Breakout)", "Snake (Retro)", "Sleep Timer"
 };
-const int EXTRAS_MENU_COUNT = 7;
+const int EXTRAS_MENU_COUNT = 8;
 
 const char* SETTINGS_MENU_LABELS[] = {
     "About", "UI Style", "Screen Sleep", "Brightness", "Visualizer", "Shuffle", "Repeat", "Deep Sleep Now"
@@ -379,6 +382,21 @@ void parseIncomingBlePacket(const String& raw) {
         if (decoded == 288) {
             hasAlbumArt = true;
         }
+    } else if (raw.startsWith("SPEC:")) {
+        // Format: SPEC:v0,v1,v2,v3,v4
+        int idx = 0;
+        int cur = 5;
+        while (cur < (int)raw.length() && idx < 5) {
+            int comma = raw.indexOf(',', cur);
+            if (comma == -1) {
+                state.realSpec[idx++] = raw.substring(cur).toInt();
+                break;
+            } else {
+                state.realSpec[idx++] = raw.substring(cur, comma).toInt();
+                cur = comma + 1;
+            }
+        }
+        state.lastSpecMs = millis();
     } else if (raw.startsWith("MN|")) {
         // Формат: MN|folderId|offset|Item1|Item2|...
         int p1 = raw.indexOf('|', 3);
@@ -732,9 +750,10 @@ void handleCenterShortPress() {
             case 1: pushScreen(SCR_STOPWATCH, "sw", "Stopwatch"); break;
             case 2: pushScreen(SCR_FLASHLIGHT, "flash", "Flashlight"); break;
             case 3: pushScreen(SCR_EQUALIZER, "eq", "Equalizer"); break;
-            case 4: brick.reset(); pushScreen(SCR_GAME_BRICK, "brick", "Brick"); break;
-            case 5: snake.reset(); pushScreen(SCR_GAME_SNAKE, "snake", "Snake"); break;
-            case 6: {
+            case 4: pushScreen(SCR_PC_STREAM, "pc", "PC Monitor"); break;
+            case 5: brick.reset(); pushScreen(SCR_GAME_BRICK, "brick", "Brick"); break;
+            case 6: snake.reset(); pushScreen(SCR_GAME_SNAKE, "snake", "Snake"); break;
+            case 7: {
                 const int opts[] = {0, 15, 30, 45, 60, 90};
                 int next = 0;
                 for (int i = 0; i < 6; i++) if (opts[i] == state.sleepMinutes) next = opts[(i + 1) % 6];
@@ -958,6 +977,13 @@ void pollButtons() {
             }
             btns[i].wakeIgnored = false;
             lastActivityMs = now;
+
+            const char* bName = (btns[i].pin == PIN_BTN_UP) ? "UP" :
+                                (btns[i].pin == PIN_BTN_DOWN) ? "DOWN" :
+                                (btns[i].pin == PIN_BTN_LEFT) ? "LEFT" :
+                                (btns[i].pin == PIN_BTN_RIGHT) ? "RIGHT" :
+                                (btns[i].pin == PIN_BTN_CENTER) ? "CENTER" : "MENU";
+            Serial.printf("BTN:%s:1\n", bName);
         } else if (lvl == LOW) {
             lastActivityMs = now;
             if (btns[i].wakeIgnored) {
@@ -1041,7 +1067,7 @@ String getRightValueForItem(int idx) {
         if (idx == 3) {
             return EQ_PRESET_NAMES[eqPresetIdx];
         }
-        if (idx == 6) {
+        if (idx == 7) {
             return state.sleepMinutes == 0 ? "Off" : (String(state.sleepMinutes) + "m");
         }
     }
@@ -1087,18 +1113,19 @@ void drawMenuScreen() {
                 u8g2.setDrawColor(1);
             }
 
-            String label = getCurrentMenuItemLabel(itemIdx);
-            if (label.length() > 15) label = label.substring(0, 15);
-            u8g2.drawUTF8(4, yTop + 10, label.c_str());
-
             String rightVal = getRightValueForItem(itemIdx);
+            int maxLabelWidth = (total > visibleRows) ? 116 : 122;
             if (rightVal.length() > 0) {
                 int rw = u8g2.getUTF8Width(rightVal.c_str());
-                int rightEdge = (total > visibleRows) ? 116 : 122;
-                u8g2.drawUTF8(rightEdge - rw, yTop + 10, rightVal.c_str());
+                maxLabelWidth -= (rw + 4);
+                u8g2.drawUTF8((total > visibleRows ? 116 : 122) - rw, yTop + 10, rightVal.c_str());
             }
+
+            u8g2.setClipWindow(3, yTop, maxLabelWidth, yTop + 12);
+            String label = getCurrentMenuItemLabel(itemIdx);
+            u8g2.drawUTF8(4, yTop + 10, label.c_str());
+            u8g2.setMaxClipWindow();
         } else {
-            // Классическое меню iPod
             if (isSelected) {
                 u8g2.setDrawColor(1);
                 u8g2.drawBox(0, yTop, total > visibleRows ? 121 : 128, 12);
@@ -1107,16 +1134,19 @@ void drawMenuScreen() {
                 u8g2.setDrawColor(1);
             }
 
-            String label = getCurrentMenuItemLabel(itemIdx);
-            if (label.length() > 16) label = label.substring(0, 16);
-            u8g2.drawUTF8(3, yTop + 10, label.c_str());
-
             String rightVal = getRightValueForItem(itemIdx);
+            int maxLabelWidth = (total > visibleRows) ? 119 : 125;
             if (rightVal.length() > 0) {
                 int rw = u8g2.getUTF8Width(rightVal.c_str());
-                int rightEdge = (total > visibleRows) ? 119 : 125;
-                u8g2.drawUTF8(rightEdge - rw, yTop + 10, rightVal.c_str());
+                maxLabelWidth -= (rw + 4);
+                u8g2.drawUTF8((total > visibleRows ? 119 : 125) - rw, yTop + 10, rightVal.c_str());
             }
+
+            u8g2.setClipWindow(2, yTop, maxLabelWidth, yTop + 12);
+            String label = getCurrentMenuItemLabel(itemIdx);
+            u8g2.drawUTF8(3, yTop + 10, label.c_str());
+            u8g2.setMaxClipWindow();
+        }
         }
     }
 
@@ -1228,11 +1258,13 @@ void drawNowPlayingScreen() {
         if (state.isScrubbing) meta = "[SEEK]";
         u8g2.drawStr(54, 62, meta.c_str());
 
-        // Audio visualizer (Modern UI)
+        // Audio visualizer (Modern UI) with real frequencies from phone
         if (state.visualizerEnabled && state.isPlaying) {
+            bool useReal = (millis() - state.lastSpecMs < 1500);
             uint32_t t = millis() / 90;
             for (int b = 0; b < 5; b++) {
-                int h = 1 + ((t * (b + 2) + b * 7) % 8);
+                int h = useReal ? state.realSpec[b] : (1 + ((t * (b + 2) + b * 7) % 8));
+                h = constrain(h, 1, 8);
                 u8g2.drawVLine(106 + b * 4, 63 - h, h);
                 u8g2.drawVLine(107 + b * 4, 63 - h, h);
             }
@@ -1258,11 +1290,13 @@ void drawNowPlayingScreen() {
             u8g2.drawStr(leftX, 21, modes.c_str());
         }
 
-        // Audio visualizer (Classic UI)
+        // Audio visualizer (Classic UI) with real frequencies from phone
         if (state.visualizerEnabled && state.isPlaying) {
+            bool useReal = (millis() - state.lastSpecMs < 1500);
             uint32_t t = millis() / 90;
             for (int b = 0; b < 5; b++) {
-                int h = 1 + ((t * (b + 3) + b * 5) % 8);
+                int h = useReal ? state.realSpec[b] : (1 + ((t * (b + 3) + b * 5) % 8));
+                h = constrain(h, 1, 8);
                 u8g2.drawVLine(105 + b * 4, 21 - h, h);
                 u8g2.drawVLine(106 + b * 4, 21 - h, h);
             }
@@ -1317,6 +1351,59 @@ void drawNowPlayingScreen() {
 void drawFlashlightScreen() {
     u8g2.setDrawColor(1);
     u8g2.drawBox(0, 0, 128, 64);
+}
+
+
+// ======================= PC MONITOR STREAM ========================
+uint8_t pcStreamBuffer[1024];
+
+void processSerialPcStream() {
+    static int rxState = 0;
+    static int rxIdx = 0;
+
+    while (Serial.available()) {
+        uint8_t b = Serial.read();
+        switch (rxState) {
+            case 0:
+                if (b == 0xAA) rxState = 1;
+                break;
+            case 1:
+                if (b == 0x55) rxState = 2;
+                else rxState = (b == 0xAA) ? 1 : 0;
+                break;
+            case 2:
+                if (b == 0x01) {
+                    rxState = 3;
+                    rxIdx = 0;
+                } else {
+                    rxState = 0;
+                }
+                break;
+            case 3:
+                pcStreamBuffer[rxIdx++] = b;
+                if (rxIdx >= 1024) rxState = 4;
+                break;
+            case 4:
+                if (b == 0x55) rxState = 5;
+                else rxState = 0;
+                break;
+            case 5:
+                if (b == 0xAA) {
+                    if (state.currentScreen != SCR_PC_STREAM) {
+                        pushScreen(SCR_PC_STREAM, "pc", "PC Monitor");
+                    }
+                    lastActivityMs = millis();
+                    memcpy(u8g2.getBufferPtr(), pcStreamBuffer, 1024);
+                    u8g2.sendBuffer();
+                }
+                rxState = 0;
+                break;
+        }
+    }
+}
+
+void drawPcStreamScreen() {
+    memcpy(u8g2.getBufferPtr(), pcStreamBuffer, 1024);
 }
 
 void drawEqualizerScreen() {
@@ -1566,6 +1653,7 @@ void loop() {
         }
     }
 
+    processSerialPcStream();
     pollButtons();
 
     uint32_t now = millis();
@@ -1604,7 +1692,7 @@ void loop() {
     if (!isDisplaySleeping && (now - lastFrameMs >= 30)) {
         lastFrameMs = now;
         u8g2.clearBuffer();
-        if (state.currentScreen != SCR_FLASHLIGHT) {
+        if (state.currentScreen != SCR_FLASHLIGHT && state.currentScreen != SCR_PC_STREAM) {
             drawStatusBar();
         }
 
@@ -1632,6 +1720,9 @@ void loop() {
                 break;
             case SCR_EQUALIZER:
                 drawEqualizerScreen();
+                break;
+            case SCR_PC_STREAM:
+                drawPcStreamScreen();
                 break;
             case SCR_GAME_BRICK:
                 updateAndDrawBrickGame();

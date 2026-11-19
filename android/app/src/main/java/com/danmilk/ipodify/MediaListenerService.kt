@@ -21,7 +21,67 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
 
+
+class AudioSpectrumVisualizer(private val onSpectrum: (String) -> Unit) {
+    private var visualizer: Visualizer? = null
+    private var lastSendMs = 0L
+
+    fun start() {
+        if (visualizer != null) return
+        try {
+            val range = Visualizer.getCaptureSizeRange()
+            val size = if (range.isNotEmpty()) range[0] else 128
+            visualizer = Visualizer(0).apply {
+                captureSize = size
+                setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                    override fun onWaveFormDataCapture(vis: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
+                    override fun onFftDataCapture(vis: Visualizer?, fft: ByteArray?, samplingRate: Int) {
+                        if (fft == null || fft.isEmpty()) return
+                        val now = System.currentTimeMillis()
+                        if (now - lastSendMs < 85) return
+                        lastSendMs = now
+
+                        // 5 bands: 60Hz, 250Hz, 1kHz, 4kHz, 14kHz
+                        val ranges = arrayOf(1..2, 3..5, 6..12, 13..25, 26..48)
+                        val bands = IntArray(5)
+                        for (i in 0 until 5) {
+                            var sum = 0.0
+                            var cnt = 0
+                            for (k in ranges[i]) {
+                                val reIdx = 2 * k
+                                val imIdx = 2 * k + 1
+                                if (imIdx < fft.size) {
+                                    val re = fft[reIdx].toDouble()
+                                    val im = fft[imIdx].toDouble()
+                                    sum += Math.hypot(re, im)
+                                    cnt++
+                                }
+                            }
+                            val avg = if (cnt > 0) sum / cnt else 0.0
+                            val h = (avg / 10.0).toInt().coerceIn(1, 8)
+                            bands[i] = h
+                        }
+                        onSpectrum("SPEC:${bands[0]},${bands[1]},${bands[2]},${bands[3]},${bands[4]}")
+                    }
+                }, Visualizer.getMaxCaptureRate() / 2, false, true)
+                enabled = true
+            }
+        } catch (e: Exception) {
+            Log.w("AudioSpectrum", "Visualizer failed: ${e.message}")
+        }
+    }
+
+    fun stop() {
+        try {
+            visualizer?.enabled = false
+            visualizer?.release()
+        } catch (e: Exception) {}
+        visualizer = null
+    }
+}
+
 class MediaListenerService : NotificationListenerService() {
+    private var spectrumVis: AudioSpectrumVisualizer? = null
 
     companion object {
         private const val TAG = "iPodifyMedia"
@@ -271,6 +331,11 @@ class MediaListenerService : NotificationListenerService() {
         val isPlaying = pbState?.state == PlaybackState.STATE_PLAYING
 
         lastTrackInfo = "$title - $artist"
+        if (state.state == PlaybackState.STATE_PLAYING) {
+            spectrumVis?.start()
+        } else {
+            spectrumVis?.stop()
+        }
         MainActivity.instance?.updateUI()
 
         val posSec = (positionMs / 1000).toInt()
@@ -358,16 +423,19 @@ class MediaListenerService : NotificationListenerService() {
                     if (hasSpotifyToken) SpotifyApiHelper.shuffle(this, true)
                 }
                 cmd.startsWith("GET:") -> {
-                    val folder = cmd.substringAfter("GET:").substringBefore(":")
+                    val raw = cmd.removePrefix("GET:")
+                    val lastColon = raw.lastIndexOf(':')
+                    val folder = if (lastColon > 0) raw.substring(0, lastColon) else raw
                     SpotifyApiHelper.fetchFolderItems(this, folder) { list ->
                         val packet = "MN|$folder|0|${list.joinToString("|")}"
                         IpodifyBleService.instance?.sendPacketToBle(packet)
                     }
                 }
                 cmd.startsWith("PLAY_ITEM:") -> {
-                    val parts = cmd.split(":")
-                    val folder = parts.getOrNull(1) ?: ""
-                    val idx = parts.getOrNull(2)?.toIntOrNull() ?: 0
+                    val raw = cmd.removePrefix("PLAY_ITEM:")
+                    val lastColon = raw.lastIndexOf(':')
+                    val folder = if (lastColon > 0) raw.substring(0, lastColon) else raw
+                    val idx = if (lastColon > 0) raw.substring(lastColon + 1).toIntOrNull() ?: 0 else 0
                     if (hasSpotifyToken) {
                         SpotifyApiHelper.playTrackFromFolder(this, folder, idx)
                     } else {

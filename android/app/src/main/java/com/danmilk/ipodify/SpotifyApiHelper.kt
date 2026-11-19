@@ -371,21 +371,21 @@ object SpotifyApiHelper {
                 val idx = folder.substringAfter("pl_tracks:").toIntOrNull() ?: 0
                 val pUri = containerUris.getOrNull(idx)
                 val id = pUri?.substringAfter("playlist:")?.substringBefore("?")
-                if (id != null) "/playlists//tracks?limit=35" else null
+                if (id != null) "/playlists/$id/tracks?limit=35" else null
             }
             folder == "artists" -> "/me/following?type=artist&limit=30"
             folder.startsWith("art_tracks:") -> {
                 val idx = folder.substringAfter("art_tracks:").toIntOrNull() ?: 0
                 val aUri = containerUris.getOrNull(idx)
                 val id = aUri?.substringAfter("artist:")?.substringBefore("?")
-                if (id != null) "/artists//top-tracks?market=from_token" else null
+                if (id != null) "/artists/$id/top-tracks?market=from_token" else null
             }
             folder == "albums" -> "/me/albums?limit=30"
             folder.startsWith("alb_tracks:") -> {
                 val idx = folder.substringAfter("alb_tracks:").toIntOrNull() ?: 0
                 val aUri = containerUris.getOrNull(idx)
                 val id = aUri?.substringAfter("album:")?.substringBefore("?")
-                if (id != null) "/albums//tracks?limit=35" else null
+                if (id != null) "/albums/$id/tracks?limit=35" else null
             }
             folder == "recent" -> "/me/player/recently-played?limit=30"
             folder == "queue" -> "/me/player/queue"
@@ -430,9 +430,9 @@ object SpotifyApiHelper {
                                 }
                             }
                         }
-                        folder.startsWith("pl_tracks:") || folder == "songs" || folder == "recent" || folder == "top" -> {
+                        folder.startsWith("pl_tracks:") || folder == "songs" || folder == "recent" || folder == "top" || folder == "queue" -> {
                             trackUris.clear()
-                            val items = json.optJSONArray("items")
+                            val items = if (folder == "queue") json.optJSONArray("queue") ?: json.optJSONArray("items") else json.optJSONArray("items")
                             if (items != null) {
                                 for (i in 0 until items.length()) {
                                     val obj = items.getJSONObject(i)
